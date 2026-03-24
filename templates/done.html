@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MODÈR Curator — Listo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #1c1c1e; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .container { text-align: center; padding: 40px 24px; }
+        .check { font-size: 64px; margin-bottom: 20px; }
+        .title { font-family: 'Times New Roman', serif; font-size: 32px; letter-spacing: 4px; margin-bottom: 8px; }
+        .subtitle { font-size: 14px; color: #888; margin-bottom: 30px; }
+        .stat { font-size: 48px; font-weight: 700; margin-bottom: 4px; }
+        .stat-label { font-size: 13px; color: #888; margin-bottom: 30px; }
+        .btn { display: inline-block; padding: 16px 32px; border-radius: 30px; font-size: 15px; font-weight: 600; cursor: pointer; border: none; text-decoration: none; transition: all 0.2s; }
+        .btn-primary { background: #1c1c1e; color: white; }
+        .btn-primary:hover { background: #333; }
+        .btn-secondary { background: white; color: #1c1c1e; border: 1.5px solid #ddd; margin-top: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="check">✓</div>
+        <div class="title">MODÈR</div>
+        <div class="subtitle">Todos los productos han sido revisados</div>
+        <div class="stat">{{ accepted_count }}</div>
+        <div class="stat-label">productos aceptados de {{ total }}</div>
+
+        {% if accepted_count > 0 %}
+        <a href="/download" class="btn btn-primary">📥 Descargar planilla</a><br>
+        {% endif %}
+        <a href="/" class="btn btn-secondary">← Volver al inicio</a>
+    </div>
+</body>
+</html>

@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MODÈR Curator</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #1c1c1e; min-height: 100vh; }
+        .container { max-width: 700px; margin: 0 auto; padding: 40px 24px; }
+        .logo { font-family: 'Times New Roman', Georgia, serif; font-size: 42px; letter-spacing: 6px; text-align: center; margin-bottom: 4px; }
+        .subtitle { text-align: center; font-size: 11px; letter-spacing: 4px; color: #888; margin-bottom: 50px; text-transform: uppercase; }
+        .card { background: white; border-radius: 16px; padding: 28px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+        .card h2 { font-size: 18px; font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; }
+        .card p { font-size: 14px; color: #666; line-height: 1.6; margin-bottom: 16px; }
+        .stats { display: flex; gap: 16px; margin-bottom: 16px; }
+        .stat { flex: 1; text-align: center; padding: 14px; background: #f5f5f5; border-radius: 10px; }
+        .stat-number { font-size: 28px; font-weight: 700; }
+        .stat-label { font-size: 11px; color: #888; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
+        .btn { display: inline-flex; align-items: center; justify-content: center; padding: 14px 28px; border-radius: 30px; font-size: 15px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; width: 100%; }
+        .btn-primary { background: #1c1c1e; color: white; }
+        .btn-primary:hover { background: #333; }
+        .btn-secondary { background: white; color: #1c1c1e; border: 1.5px solid #ddd; margin-top: 10px; }
+        .btn-secondary:hover { border-color: #1c1c1e; }
+        .btn-small { padding: 8px 16px; font-size: 13px; width: auto; border-radius: 20px; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .upload-area { border: 2px dashed #ddd; border-radius: 12px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; margin-bottom: 12px; }
+        .upload-area:hover { border-color: #1c1c1e; }
+        .upload-area input { display: none; }
+        .step-number { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #1c1c1e; color: white; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+        .brand-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+        .brand-chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: #f0f0f0; border-radius: 20px; font-size: 13px; font-weight: 500; }
+        .brand-chip.active { background: #1c1c1e; color: white; }
+        .brand-chip .remove { cursor: pointer; opacity: 0.5; font-size: 16px; line-height: 1; }
+        .brand-chip .remove:hover { opacity: 1; }
+        .brand-suggestions { max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 10px; margin-bottom: 12px; }
+        .brand-suggestion { display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; cursor: pointer; transition: background 0.1s; font-size: 13px; border-bottom: 1px solid #f5f5f5; }
+        .brand-suggestion:last-child { border-bottom: none; }
+        .brand-suggestion:hover { background: #f9f9f9; }
+        .brand-suggestion .domain { color: #aaa; font-size: 11px; }
+        .brand-suggestion .add-btn { color: #0066cc; font-weight: 600; font-size: 12px; }
+        .brand-suggestion.added { opacity: 0.4; }
+        .brand-suggestion.added .add-btn { color: #2e7d32; }
+        .custom-brand-form { display: flex; gap: 8px; margin-bottom: 12px; }
+        .custom-brand-form input { flex: 1; padding: 10px 14px; border: 1.5px solid #ddd; border-radius: 10px; font-size: 13px; outline: none; }
+        .custom-brand-form input:focus { border-color: #1c1c1e; }
+        .skip-link { display: block; text-align: center; font-size: 13px; color: #aaa; cursor: pointer; margin-top: 8px; text-decoration: underline; }
+        .skip-link:hover { color: #666; }
+        .loading { display: none; text-align: center; padding: 20px; }
+        .spinner { width: 32px; height: 32px; border: 3px solid #eee; border-top-color: #1c1c1e; border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
+        .badge-green { background: #e8f5e9; color: #2e7d32; }
+        .status { text-align: center; padding: 8px; font-size: 13px; color: #888; }
+        .section-divider { border: none; border-top: 1px solid #f0f0f0; margin: 16px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">MODÈR</div>
+        <div class="subtitle">Product Curator</div>
+
+        <!-- Step 1: Previous spreadsheet -->
+        <div class="card">
+            <h2><span class="step-number">1</span> Planilla anterior</h2>
+            <p>Sube tu planilla anterior. Los productos existentes se <strong>mantienen</strong> y solo se agregarán los nuevos. La planilla final será el acumulado.</p>
+            {% if previous_count > 0 %}
+            <div style="margin-bottom: 12px;">
+                <span class="badge badge-green">✓ {{ previous_count }} productos base cargados</span>
+                <span style="font-size: 11px; color: #888; margin-left: 8px;">Se acumularán con los nuevos</span>
+            </div>
+            {% endif %}
+            <div class="upload-area" onclick="document.getElementById('fileInput').click()">
+                <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="uploadPrevious(this)">
+                <div style="font-size: 28px; margin-bottom: 6px;">📄</div>
+                <div style="font-size: 13px; color: #888;">Click para subir .xlsx anterior</div>
+            </div>
+            <div id="uploadStatus" class="status"></div>
+            <span class="skip-link" onclick="document.getElementById('step2').scrollIntoView({behavior:'smooth'})">
+                Saltar — es mi primera vez
+            </span>
+        </div>
+
+        <!-- Step 2: Brand selection -->
+        <div class="card" id="step2">
+            <h2><span class="step-number">2</span> Seleccionar marcas</h2>
+            <p>Elige las marcas que quieres crawlear. Puedes agregar sugeridas o escribir nuevas.</p>
+            <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Marcas activas</div>
+            <div class="brand-list" id="activeBrands">
+                {% for brand in active_brands %}
+                <div class="brand-chip active" data-domain="{{ brand.domain }}">
+                    {{ brand.name }}
+                    <span class="remove" onclick="removeBrand('{{ brand.domain }}')">&times;</span>
+                </div>
+                {% endfor %}
+            </div>
+            <hr class="section-divider">
+            <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Agregar marca nueva</div>
+            <div class="custom-brand-form">
+                <input type="text" id="brandName" placeholder="Nombre (ej: SCALPERS)">
+                <input type="text" id="brandUrl" placeholder="URL (ej: scalperscompany.com)">
+                <button class="btn btn-primary btn-small" onclick="addCustomBrand()">+</button>
+            </div>
+            <hr class="section-divider">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px;">Marcas sugeridas</div>
+                <button class="btn btn-primary btn-small" onclick="addAllSuggested()" style="font-size: 11px; padding: 6px 14px;">Agregar todas</button>
+            </div>
+            <div class="brand-suggestions" id="suggestedList">
+                {% for brand in suggested_brands %}
+                <div class="brand-suggestion" id="sug_{{ brand.domain | replace('.', '_') | replace('/', '_') }}"
+                     onclick="addSuggested('{{ brand.name }}', '{{ brand.domain }}', '{{ brand.url }}', this)">
+                    <div>
+                        <strong>{{ brand.name }}</strong>
+                        <span class="domain">{{ brand.domain }}</span>
+                    </div>
+                    <span class="add-btn">+ Agregar</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Step 3: Crawl -->
+        <div class="card">
+            <h2><span class="step-number">3</span> Crawlear catálogos</h2>
+            <p>El robot visitará las marcas seleccionadas y extraerá todos los productos.</p>
+            {% if has_cache %}
+            <div class="stats">
+                <div class="stat"><div class="stat-number">{{ product_count }}</div><div class="stat-label">Productos</div></div>
+                <div class="stat"><div class="stat-number">{{ accepted_count }}</div><div class="stat-label">Aceptados</div></div>
+                <div class="stat"><div class="stat-number">{{ rejected_count }}</div><div class="stat-label">Rechazados</div></div>
+            </div>
+            {% endif %}
+            <button class="btn btn-primary" onclick="startCrawl()" id="crawlBtn">
+                {% if has_cache %}🔄 Re-crawlear marcas{% else %}🔍 Iniciar crawl{% endif %}
+            </button>
+            <div class="loading" id="crawlLoading">
+                <div class="spinner"></div>
+                <p id="crawlMessage">Iniciando...</p>
+                <div style="margin-top: 12px; background: #eee; border-radius: 8px; height: 6px; overflow: hidden;">
+                    <div id="crawlProgressBar" style="height: 100%; background: #1c1c1e; width: 0%; transition: width 0.5s;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; color: #aaa;">
+                    <span id="crawlBrandInfo">—</span>
+                    <span id="crawlProductCount">0 productos</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 4: Curate -->
+        <div class="card">
+            <h2><span class="step-number">4</span> Curar productos</h2>
+            <p>Revisa cada producto. Agrega, rechaza, o termina cuando quieras.</p>
+            {% if has_cache %}
+            <a href="/curate" class="btn btn-primary" style="text-decoration:none; color:white;">Empezar a curar</a>
+            {% else %}
+            <button class="btn btn-primary" disabled>Primero crawlea los catálogos</button>
+            {% endif %}
+            {% if accepted_count > 0 %}
+            <a href="/download" class="btn btn-secondary" style="text-decoration:none; color:#1c1c1e;">
+                📥 Descargar planilla ({{ accepted_count }} productos)
+            </a>
+            {% endif %}
+        </div>
+
+        <div style="text-align: center; margin-top: 30px;">
+            <button onclick="resetSession()" style="background:none; border:none; color:#ccc; font-size:12px; cursor:pointer;">Reiniciar sesión</button>
+        </div>
+    </div>
+
+    <script>
+        function uploadPrevious(input) {
+            const file = input.files[0];
+            if (!file) return;
+            const fd = new FormData();
+            fd.append('file', file);
+            document.getElementById('uploadStatus').textContent = 'Subiendo...';
+            fetch('/upload-previous', { method: 'POST', body: fd })
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('uploadStatus').textContent =
+                        data.known_urls + ' URLs reconocidas. Serán filtradas.';
+                    setTimeout(() => location.reload(), 1500);
+                });
+        }
+
+        function addCustomBrand() {
+            const name = document.getElementById('brandName').value.trim();
+            const url = document.getElementById('brandUrl').value.trim();
+            if (!name || !url) { alert('Ingresa nombre y URL'); return; }
+            fetch('/add-brand', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, url })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert(data.error); return; }
+                location.reload();
+            });
+        }
+
+        function addAllSuggested() {
+            fetch('/add-all-suggested', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    location.reload();
+                });
+        }
+
+        function addSuggested(name, domain, url, el) {
+            if (el.classList.contains('added')) return;
+            fetch('/add-brand', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, url })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) { alert(data.error); return; }
+                el.classList.add('added');
+                el.querySelector('.add-btn').textContent = '✓ Agregada';
+                location.reload();
+            });
+        }
+
+        function removeBrand(domain) {
+            fetch('/remove-brand', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain })
+            }).then(() => location.reload());
+        }
+
+        function startCrawl() {
+            document.getElementById('crawlBtn').disabled = true;
+            document.getElementById('crawlLoading').style.display = 'block';
+
+            fetch('/crawl', { method: 'POST' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        alert(data.error);
+                        document.getElementById('crawlLoading').style.display = 'none';
+                        document.getElementById('crawlBtn').disabled = false;
+                        return;
+                    }
+                    // Start listening for progress via SSE
+                    const evtSource = new EventSource('/crawl-progress');
+                    evtSource.onmessage = function(event) {
+                        const p = JSON.parse(event.data);
+                        document.getElementById('crawlMessage').textContent = p.message || 'Procesando...';
+                        document.getElementById('crawlProductCount').textContent = (p.products_found || 0) + ' productos';
+
+                        if (p.brand_total > 0) {
+                            const pct = Math.round((p.brand_idx / p.brand_total) * 100);
+                            document.getElementById('crawlProgressBar').style.width = pct + '%';
+                            document.getElementById('crawlBrandInfo').textContent =
+                                'Marca ' + p.brand_idx + ' de ' + p.brand_total;
+                        }
+
+                        if (p.done) {
+                            evtSource.close();
+                            document.getElementById('crawlProgressBar').style.width = '100%';
+                            setTimeout(() => location.reload(), 1500);
+                        }
+                    };
+                    evtSource.onerror = function() {
+                        evtSource.close();
+                        setTimeout(() => location.reload(), 2000);
+                    };
+                });
+        }
+
+        function resetSession() {
+            if (!confirm('Reiniciar sesión? Se perderán los aceptados/rechazados.')) return;
+            fetch('/reset', { method: 'POST' }).then(() => location.reload());
+        }
+
+        document.getElementById('brandUrl').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') addCustomBrand();
+        });
+    </script>
+</body>
+</html>

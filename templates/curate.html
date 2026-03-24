@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MODÈR Curator — Curar</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #1c1c1e; min-height: 100vh; }
+        .header { position: fixed; top: 0; left: 0; right: 0; background: white; z-index: 100; padding: 12px 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .header-logo { font-family: 'Times New Roman', serif; font-size: 20px; letter-spacing: 4px; }
+        .header-stats { display: flex; gap: 12px; font-size: 12px; color: #888; }
+        .header-stats span { background: #f5f5f5; padding: 4px 10px; border-radius: 12px; }
+        .header-stats .accepted { background: #e8f5e9; color: #2e7d32; }
+        .header-stats .rejected { background: #fce4ec; color: #c62828; }
+
+        .progress-bar { position: fixed; top: 53px; left: 0; right: 0; height: 3px; background: #eee; z-index: 100; }
+        .progress-fill { height: 100%; background: #1c1c1e; transition: width 0.3s; }
+
+        .container { max-width: 500px; margin: 0 auto; padding: 80px 16px 180px; }
+
+        .product-card { background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .product-image-wrap { position: relative; width: 100%; aspect-ratio: 3/4; overflow: hidden; background: #f5f5f5; }
+        .product-image { width: 100%; height: 100%; object-fit: cover; }
+        .product-badge { position: absolute; top: 12px; left: 12px; background: white; padding: 5px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; letter-spacing: 1px; }
+        .product-price { position: absolute; bottom: 12px; right: 12px; background: rgba(0,0,0,0.75); color: white; padding: 6px 14px; border-radius: 20px; font-size: 15px; font-weight: 700; }
+
+        .product-info { padding: 20px; }
+        .product-brand { font-size: 11px; letter-spacing: 2px; color: #888; text-transform: uppercase; margin-bottom: 6px; }
+        .product-name { font-size: 20px; font-weight: 700; margin-bottom: 8px; line-height: 1.3; }
+        .product-category { display: inline-block; background: #f5f5f5; padding: 4px 10px; border-radius: 8px; font-size: 12px; color: #666; margin-bottom: 10px; }
+        .product-desc { font-size: 13px; color: #888; line-height: 1.5; margin-bottom: 12px; max-height: 60px; overflow: hidden; }
+        .product-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+        .tag { background: #f0f0f0; padding: 3px 8px; border-radius: 6px; font-size: 11px; color: #666; }
+        .product-variants { font-size: 12px; color: #aaa; margin-top: 8px; }
+        .product-link { display: block; text-align: center; font-size: 12px; color: #0066cc; margin-top: 12px; text-decoration: none; }
+
+        /* Thumbnails */
+        .thumbs { display: flex; gap: 4px; padding: 8px 20px; overflow-x: auto; }
+        .thumb { width: 48px; height: 48px; border-radius: 6px; object-fit: cover; cursor: pointer; border: 2px solid transparent; flex-shrink: 0; }
+        .thumb.active { border-color: #1c1c1e; }
+
+        /* Action buttons */
+        .actions { position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid #eee; padding: 16px 20px; padding-bottom: max(16px, env(safe-area-inset-bottom)); z-index: 100; }
+        .action-row { display: flex; gap: 10px; max-width: 500px; margin: 0 auto; }
+        .btn { flex: 1; padding: 16px; border-radius: 14px; font-size: 15px; font-weight: 600; cursor: pointer; border: none; transition: all 0.15s; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .btn-accept { background: #1c1c1e; color: white; }
+        .btn-accept:hover { background: #333; }
+        .btn-accept:active { transform: scale(0.97); }
+        .btn-reject { background: #f5f5f5; color: #666; }
+        .btn-reject:hover { background: #eee; }
+        .btn-finish { background: white; color: #1c1c1e; border: 1.5px solid #1c1c1e; }
+        .btn-finish:hover { background: #1c1c1e; color: white; }
+
+        .remaining { text-align: center; font-size: 12px; color: #ccc; margin-top: 8px; }
+
+        /* Keyboard hints */
+        .kbd { display: inline-block; background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; margin-left: 4px; }
+
+        /* Slide animation */
+        .product-card { transition: transform 0.3s, opacity 0.3s; }
+        .slide-left { transform: translateX(-120%); opacity: 0; }
+        .slide-right { transform: translateX(120%); opacity: 0; }
+
+        /* Brand filter bar */
+        .brand-filter { position: fixed; top: 53px; left: 0; right: 0; background: white; z-index: 99; padding: 8px 16px; border-bottom: 1px solid #eee; display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        .brand-filter::-webkit-scrollbar { display: none; }
+        .brand-pill { flex-shrink: 0; padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1.5px solid #eee; background: white; color: #666; text-decoration: none; white-space: nowrap; }
+        .brand-pill.active { background: #1c1c1e; color: white; border-color: #1c1c1e; }
+        .brand-pill:hover { border-color: #1c1c1e; }
+        .brand-pill .count { opacity: 0.6; font-size: 10px; margin-left: 3px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-logo">MODÈR</div>
+        <div class="header-stats">
+            <span class="accepted" id="acceptedCount">✓ {{ accepted_count }}</span>
+            <span class="rejected" id="rejectedCount">✗ {{ rejected_count }}</span>
+        </div>
+    </div>
+
+    <div class="progress-bar">
+        <div class="progress-fill" id="progressFill"
+             style="width: {{ (progress / total * 100) | round(1) }}%"></div>
+    </div>
+
+    {% if available_brands %}
+    <div class="brand-filter">
+        <a href="/curate" class="brand-pill {% if not current_brand_filter %}active{% endif %}">
+            Todas
+        </a>
+        {% for brand_name, count in available_brands %}
+        <a href="/curate?brand={{ brand_name | urlencode }}"
+           class="brand-pill {% if current_brand_filter == brand_name %}active{% endif %}">
+            {{ brand_name }}<span class="count">{{ count }}</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="container" style="padding-top: {% if available_brands %}120px{% else %}80px{% endif %};"
+        <div class="product-card" id="productCard">
+            <div class="product-image-wrap">
+                <img class="product-image" id="mainImage"
+                     src="{{ product.image_url }}"
+                     alt="{{ product.name }}"
+                     onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22400%22 height=%22400%22><rect fill=%22%23f5f5f5%22 width=%22400%22 height=%22400%22/><text x=%22200%22 y=%22200%22 text-anchor=%22middle%22 fill=%22%23ccc%22 font-size=%2216%22>Sin imagen</text></svg>'">
+                <div class="product-badge">{{ product.brand }}</div>
+                {% if product.price %}
+                <div class="product-price">${{ product.price | replace('.00', '') }}</div>
+                {% endif %}
+            </div>
+
+            {% if product.all_images | length > 1 %}
+            <div class="thumbs">
+                {% for img in product.all_images %}
+                <img class="thumb {% if loop.first %}active{% endif %}"
+                     src="{{ img }}"
+                     onclick="changeImage(this, '{{ img }}')"
+                     onerror="this.style.display='none'">
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            <div class="product-info">
+                <div class="product-brand">{{ product.brand }}</div>
+                <div class="product-name">{{ product.name }}</div>
+                <span class="product-category">{{ product.category }}</span>
+
+                {% if product.description %}
+                <div class="product-desc">{{ product.description }}</div>
+                {% endif %}
+
+                {% if product.tags %}
+                <div class="product-tags">
+                    {% for tag in product.tags %}
+                    <span class="tag">{{ tag }}</span>
+                    {% endfor %}
+                </div>
+                {% endif %}
+
+                {% if product.variants %}
+                <div class="product-variants">
+                    Variantes: {{ product.variants | join(', ') }}
+                </div>
+                {% endif %}
+
+                <a class="product-link" href="{{ product.product_url }}" target="_blank">
+                    Ver en {{ product.brand }} ↗
+                </a>
+            </div>
+        </div>
+
+        <div class="remaining">
+            {{ remaining }} productos restantes
+        </div>
+    </div>
+
+    <div class="actions">
+        <div class="action-row">
+            <button class="btn btn-reject" onclick="doAction('reject')">
+                ✗ Rechazar <span class="kbd">←</span>
+            </button>
+            <button class="btn btn-accept" onclick="doAction('accept')">
+                ✓ Agregar <span class="kbd">→</span>
+            </button>
+        </div>
+        <div class="action-row" style="margin-top: 8px;">
+            <button class="btn btn-finish" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none;">
+                ⏭ Saltar marca ({{ product.brand }})
+            </button>
+        </div>
+        <div class="action-row" style="margin-top: 6px;">
+            <button class="btn btn-finish" onclick="doAction('finish')">
+                ■ Terminar aquí y generar planilla
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const product = {{ product | tojson }};
+        let accepted = {{ accepted_count }};
+        let rejected = {{ rejected_count }};
+        const brandFilter = '{{ current_brand_filter | default("") }}';
+        const curateUrl = brandFilter ? '/curate?brand=' + encodeURIComponent(brandFilter) : '/curate';
+
+        function changeImage(thumb, url) {
+            document.getElementById('mainImage').src = url;
+            document.querySelectorAll('.thumb').forEach(t => t.classList.remove('active'));
+            thumb.classList.add('active');
+        }
+
+        function doAction(action) {
+            const card = document.getElementById('productCard');
+
+            if (action === 'skip_brand') {
+                fetch('/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'skip_brand', brand: product.brand })
+                })
+                .then(r => r.json())
+                .then(() => { window.location.href = '/curate'; });
+                return;
+            }
+
+            if (action === 'finish') {
+                const prev = product._previous_count || 0;
+                const msg = prev > 0
+                    ? `¿Terminar? Se generará la planilla con ${prev} anteriores + ${accepted} nuevos.`
+                    : `¿Terminar? Se generará la planilla con ${accepted} productos.`;
+                if (!confirm(msg)) return;
+                fetch('/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'finish' })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    // Open download in hidden iframe so it doesn't interrupt navigation
+                    const iframe = document.createElement('iframe');
+                    iframe.style.display = 'none';
+                    iframe.src = '/download';
+                    document.body.appendChild(iframe);
+                    // Wait for download to start, then go to home
+                    setTimeout(() => { window.location.href = '/'; }, 3000);
+                });
+                return;
+            }
+
+            // Animate
+            card.classList.add(action === 'accept' ? 'slide-right' : 'slide-left');
+
+            fetch('/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, product: product })
+            })
+            .then(r => r.json())
+            .then(() => {
+                if (action === 'accept') accepted++;
+                else rejected++;
+                // Navigate to next (preserve brand filter)
+                setTimeout(() => { window.location.href = curateUrl; }, 200);
+            });
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === 'a') doAction('accept');
+            if (e.key === 'ArrowLeft' || e.key === 'r') doAction('reject');
+            if (e.key === 'Escape') doAction('finish');
+        });
+    </script>
+</body>
+</html>
