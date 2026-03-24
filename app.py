@@ -17,6 +17,23 @@ import time
 from datetime import datetime
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "moder-curator-2026-secret")
+
+# ─── Auth ────────────────────────────────────────────────────────────────
+USERS = {
+    "demo": "demo",
+}
+
+from functools import wraps
+from flask import session as flask_session
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not flask_session.get("logged_in"):
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
 
 # ─── Config ──────────────────────────────────────────────────────────────
 DATA_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -933,9 +950,38 @@ def parse_previous_spreadsheet(file_path):
     return urls, rows_data
 
 
+# ─── Auth Routes ─────────────────────────────────────────────────────────
+
+@app.route("/login")
+def login_page():
+    if flask_session.get("logged_in"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+
+@app.route("/login", methods=["POST"])
+def login_action():
+    data = request.json
+    username = data.get("username", "").strip()
+    password = data.get("password", "")
+
+    if username in USERS and USERS[username] == password:
+        flask_session["logged_in"] = True
+        flask_session["username"] = username
+        return jsonify({"status": "ok"})
+    return jsonify({"status": "error", "error": "Usuario o contraseña incorrectos"}), 401
+
+
+@app.route("/logout")
+def logout():
+    flask_session.clear()
+    return redirect(url_for("login_page"))
+
+
 # ─── Routes ──────────────────────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def index():
     session = load_session()
     products = load_crawl_cache()

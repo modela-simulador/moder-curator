@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1c1c1e">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect fill='%231c1c1e' width='180' height='180' rx='40'/%3E%3Ctext x='90' y='125' text-anchor='middle' fill='white' font-family='Georgia,serif' font-size='100' font-weight='bold'%3EM%3C/text%3E%3C/svg%3E">
+    <title>MODÈR Curator — Login</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #1c1c1e;
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .login-container {
+            width: 100%;
+            max-width: 380px;
+            padding: 40px 28px;
+            text-align: center;
+        }
+        .logo {
+            font-family: 'Times New Roman', Georgia, serif;
+            font-size: 48px;
+            letter-spacing: 8px;
+            margin-bottom: 6px;
+        }
+        .subtitle {
+            font-size: 11px;
+            letter-spacing: 4px;
+            color: rgba(255,255,255,0.4);
+            text-transform: uppercase;
+            margin-bottom: 50px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+            text-align: left;
+        }
+        .form-label {
+            display: block;
+            font-size: 11px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.4);
+            margin-bottom: 6px;
+        }
+        .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            background: rgba(255,255,255,0.08);
+            border: 1.5px solid rgba(255,255,255,0.12);
+            border-radius: 12px;
+            color: white;
+            font-size: 15px;
+            font-family: inherit;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+        .form-input::placeholder {
+            color: rgba(255,255,255,0.25);
+        }
+        .form-input:focus {
+            border-color: rgba(255,255,255,0.4);
+            background: rgba(255,255,255,0.12);
+        }
+        .btn-login {
+            width: 100%;
+            padding: 16px;
+            background: white;
+            color: #1c1c1e;
+            border: none;
+            border-radius: 30px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 28px;
+            transition: opacity 0.2s, transform 0.1s;
+            touch-action: manipulation;
+        }
+        .btn-login:hover {
+            opacity: 0.9;
+        }
+        .btn-login:active {
+            transform: scale(0.98);
+        }
+        .btn-login:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+        .error-msg {
+            color: #ff6b6b;
+            font-size: 13px;
+            margin-top: 16px;
+            min-height: 20px;
+        }
+        .footer-text {
+            margin-top: 40px;
+            font-size: 11px;
+            color: rgba(255,255,255,0.2);
+            letter-spacing: 1px;
+        }
+        .divider {
+            width: 40px;
+            height: 1px;
+            background: rgba(255,255,255,0.12);
+            margin: 0 auto 40px;
+        }
+
+        @media (max-width: 600px) {
+            .login-container {
+                padding: 32px 20px;
+                padding-top: max(32px, env(safe-area-inset-top));
+            }
+            .logo { font-size: 40px; letter-spacing: 6px; }
+            .subtitle { margin-bottom: 40px; }
+            .form-input { padding: 14px; font-size: 16px; }
+            .btn-login { min-height: 50px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">MODÈR</div>
+        <div class="subtitle">Product Curator</div>
+        <div class="divider"></div>
+
+        <form id="loginForm" onsubmit="doLogin(event)">
+            <div class="form-group">
+                <label class="form-label">Usuario</label>
+                <input type="text" class="form-input" id="username" placeholder="Ingresa tu usuario" autocomplete="username" autocapitalize="none" required>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Contraseña</label>
+                <input type="password" class="form-input" id="password" placeholder="Ingresa tu contraseña" autocomplete="current-password" required>
+            </div>
+            <button type="submit" class="btn-login" id="loginBtn">Iniciar sesión</button>
+            <div class="error-msg" id="errorMsg"></div>
+        </form>
+
+        <div class="footer-text">Acceso exclusivo para administradores</div>
+    </div>
+
+    <script>
+        function doLogin(e) {
+            e.preventDefault();
+            const user = document.getElementById('username').value.trim();
+            const pass = document.getElementById('password').value;
+            const btn = document.getElementById('loginBtn');
+            const err = document.getElementById('errorMsg');
+
+            btn.disabled = true;
+            btn.textContent = 'Verificando...';
+            err.textContent = '';
+
+            fetch('/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: user, password: pass })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    window.location.href = '/';
+                } else {
+                    err.textContent = data.error || 'Credenciales incorrectas';
+                    btn.disabled = false;
+                    btn.textContent = 'Iniciar sesión';
+                }
+            })
+            .catch(() => {
+                err.textContent = 'Error de conexión';
+                btn.disabled = false;
+                btn.textContent = 'Iniciar sesión';
+            });
+        }
+
+        // Auto-focus first field
+        document.getElementById('username').focus();
+    </script>
+</body>
+</html>
