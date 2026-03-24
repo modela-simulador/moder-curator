@@ -3,6 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#fafafa">
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect fill='%231c1c1e' width='180' height='180' rx='40'/%3E%3Ctext x='90' y='125' text-anchor='middle' fill='white' font-family='Georgia,serif' font-size='100' font-weight='bold'%3EM%3C/text%3E%3C/svg%3E">
     <title>MODÈR Curator</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -53,6 +57,29 @@
         .badge-green { background: #e8f5e9; color: #2e7d32; }
         .status { text-align: center; padding: 8px; font-size: 13px; color: #888; }
         .section-divider { border: none; border-top: 1px solid #f0f0f0; margin: 16px 0; }
+        button, .btn { touch-action: manipulation; }
+
+        @media (max-width: 600px) {
+            .container { padding: 28px 12px; padding-top: max(28px, env(safe-area-inset-top)); }
+            .logo { font-size: 34px; letter-spacing: 5px; }
+            .subtitle { font-size: 10px; letter-spacing: 3px; margin-bottom: 32px; }
+            .card { padding: 20px 16px; border-radius: 14px; margin-bottom: 16px; }
+            .card h2 { font-size: 16px; }
+            .card p { font-size: 13px; }
+            .stats { gap: 10px; }
+            .stat-number { font-size: 24px; }
+            .stat-label { font-size: 10px; }
+            .btn { font-size: 14px; padding: 14px 20px; }
+            .brand-list { gap: 6px; }
+            .brand-chip { padding: 7px 12px; font-size: 12px; }
+            .brand-suggestions { max-height: 180px; }
+            .brand-suggestion { padding: 10px 12px; font-size: 12px; }
+            .custom-brand-form { flex-wrap: wrap; gap: 8px; }
+            .custom-brand-form input { flex: 1 1 calc(50% - 4px); min-width: 0; padding: 10px 12px; font-size: 13px; }
+            .custom-brand-form button { flex: 0 0 auto; }
+            .upload-area { padding: 16px; }
+            .skip-link { font-size: 12px; }
+        }
     </style>
 </head>
 <body>
