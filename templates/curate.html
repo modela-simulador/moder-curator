@@ -247,20 +247,31 @@
                     ? `¿Terminar? Se generará la planilla con ${prev} anteriores + ${accepted} nuevos.`
                     : `¿Terminar? Se generará la planilla con ${accepted} productos.`;
                 if (!confirm(msg)) return;
+
+                const finishBtn = document.querySelector('.btn-finish');
+                if (finishBtn) { finishBtn.textContent = 'Generando...'; finishBtn.disabled = true; }
+
                 fetch('/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: 'finish' })
                 })
-                .then(r => r.json())
+                .then(r => {
+                    if (!r.ok) return r.json().then(d => { throw new Error(d.error || 'Error al generar planilla'); });
+                    return r.json();
+                })
                 .then(data => {
-                    // Open download in hidden iframe so it doesn't interrupt navigation
-                    const iframe = document.createElement('iframe');
-                    iframe.style.display = 'none';
-                    iframe.src = '/download';
-                    document.body.appendChild(iframe);
-                    // Wait for download to start, then go to home
-                    setTimeout(() => { window.location.href = '/'; }, 3000);
+                    if (data.status === 'error') {
+                        alert('Error: ' + (data.error || 'No se pudo generar la planilla'));
+                        if (finishBtn) { finishBtn.textContent = '✓ Finalizar'; finishBtn.disabled = false; }
+                        return;
+                    }
+                    // Redirect to download directly
+                    window.location.href = '/download';
+                })
+                .catch(err => {
+                    alert('Error: ' + err.message);
+                    if (finishBtn) { finishBtn.textContent = '✓ Finalizar'; finishBtn.disabled = false; }
                 });
                 return;
             }

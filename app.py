@@ -6,6 +6,7 @@ Web interface for curating crawled products into the MODÈR import spreadsheet.
 
 import os
 import json
+import io
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, Response
@@ -133,16 +134,20 @@ def fetch_with_retry(url, max_retries=3, base_delay=2.0):
 
 
 def crawl_woocommerce(brand, progress_callback=None):
-    """Fetch all products from a WooCommerce store via Store API"""
+    """Fetch all products from a WooCommerce store via Store API + sitemap + HTML fallback"""
     products = []
-    page = 1
+    known_urls = set()
     base_url = brand["url"].rstrip("/")
 
+    def log(msg):
+        if progress_callback:
+            progress_callback(msg)
+
+    # ── PHASE 1: WooCommerce Store API ──────────────────────────────────
+    page = 1
     while True:
         url = f"{base_url}/wp-json/wc/store/v1/products?per_page=100&page={page}"
-
-        if progress_callback:
-            progress_callback(f"Página {page} de {brand['name']}... ({len(products)} productos)")
+        log(f"API página {page} de {brand['name']}... ({len(products)} productos)")
 
         resp = fetch_with_retry(url)
         if resp is None:
@@ -161,11 +166,9 @@ def crawl_woocommerce(brand, progress_callback=None):
             image_url = images[0].get("src", "") if images else ""
             all_images = [img.get("src", "") for img in images[:5]]
 
-            # WooCommerce categories
             categories = p.get("categories", [])
             category = categories[0].get("name", "") if categories else ""
 
-            # Price (in cents for CLP)
             prices = p.get("prices", {})
             price_raw = prices.get("price", "0")
             try:
@@ -173,10 +176,8 @@ def crawl_woocommerce(brand, progress_callback=None):
             except (ValueError, TypeError):
                 price = price_raw
 
-            # Tags
             tags = [t.get("name", "") for t in p.get("tags", [])]
 
-            # Description
             desc_html = p.get("short_description", "") or p.get("description", "") or ""
             description = ""
             if desc_html:
@@ -186,6 +187,7 @@ def crawl_woocommerce(brand, progress_callback=None):
             permalink = p.get("permalink", "")
             is_purchasable = p.get("is_purchasable", True)
 
+            known_urls.add(permalink.rstrip("/").lower())
             products.append({
                 "brand": brand["name"],
                 "name": p.get("name", ""),
@@ -203,11 +205,273 @@ def crawl_woocommerce(brand, progress_callback=None):
 
         if len(data) < 100:
             break
-
         page += 1
         time.sleep(2.0)
 
+    log(f"{brand['name']}: {len(products)} vía API — buscando más en sitemap...")
+
+    # ── PHASE 2: Product sitemap (catches products API might miss) ──────
+    sitemap_urls = _fetch_woo_sitemap_urls(base_url)
+    missing_urls = [u for u in sitemap_urls if u.rstrip("/").lower() not in known_urls]
+
+    if missing_urls:
+        log(f"{brand['name']}: {len(missing_urls)} productos extra en sitemap, scrapeando...")
+        for i, purl in enumerate(missing_urls):
+            log(f"{brand['name']}: scrapeando extra {i+1}/{len(missing_urls)}")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
+
+    # ── PHASE 3: HTML navigation (explore shop/catalog pages for any remaining) ──
+    html_urls = _discover_product_urls_from_html(brand, known_urls)
+    if html_urls:
+        log(f"{brand['name']}: {len(html_urls)} productos extra en HTML, scrapeando...")
+        for i, purl in enumerate(html_urls):
+            log(f"{brand['name']}: scrapeando HTML {i+1}/{len(html_urls)}")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
+
+    log(f"✓ {brand['name']}: {len(products)} productos totales")
     return products
+
+
+def _fetch_woo_sitemap_urls(base_url):
+    """Try WooCommerce product sitemaps to discover all published product URLs"""
+    import xml.etree.ElementTree as ET
+
+    sitemap_paths = [
+        "/product-sitemap.xml",
+        "/wp-sitemap-posts-product-1.xml",
+    ]
+    product_urls = []
+    skip_suffixes = ("/tienda/", "/shop/", "/tienda", "/shop")
+
+    for path in sitemap_paths:
+        try:
+            resp = requests.get(f"{base_url}{path}", headers=HEADERS, timeout=15)
+            if resp.status_code != 200:
+                continue
+            root = ET.fromstring(resp.content)
+            ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            for url_el in root.findall('s:url', ns):
+                loc = url_el.find('s:loc', ns)
+                if loc is not None and loc.text:
+                    u = loc.text.strip()
+                    # Skip non-product pages (shop index, categories)
+                    if not u.endswith(skip_suffixes) and u != base_url + "/":
+                        product_urls.append(u)
+            if product_urls:
+                break  # Found a working sitemap
+        except Exception as e:
+            print(f"    Sitemap {path}: {e}")
+            continue
+
+    return product_urls
+
+
+def _discover_product_urls_from_html(brand, already_known):
+    """Navigate shop/catalog/collection pages to find product links not yet known"""
+    base_url = brand["url"].rstrip("/")
+    domain = brand.get("domain", "")
+
+    listing_paths = [
+        "/tienda", "/shop", "/productos", "/catalogo", "/collections/all",
+        "/collections", "/showroom", "/product-category", "/categoria-producto",
+        "/coleccion", "/coleccion-2025", "/coleccion-2026", "/"
+    ]
+
+    candidate_links = set()
+
+    for path in listing_paths:
+        try:
+            resp = requests.get(f"{base_url}{path}", headers=HEADERS, timeout=20, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            for a in soup.find_all("a", href=True):
+                href = a["href"].split("?")[0].rstrip("/")
+                if href.startswith("/"):
+                    href = base_url + href
+
+                # Must be same domain
+                if domain and domain not in href:
+                    continue
+                if not href.startswith("http"):
+                    continue
+
+                href_lower = href.lower()
+
+                # Skip clearly non-product pages
+                if any(skip in href_lower for skip in [
+                    "/cart", "/carrito", "/checkout", "/account", "/login", "/register",
+                    "/blog", "/pages/", "/policies", "/politica", "/terminos",
+                    "/nosotras", "/nosotros", "/about", "/contacto", "/contact",
+                    ".js", ".css", ".png", ".jpg", "#", "javascript:", "mailto:",
+                    "/wp-login", "/wp-admin", "/feed", "/reembolso", "/envio",
+                    "/collections/all", "/categories", "/search", "/mi-cuenta",
+                ]):
+                    continue
+
+                # Skip if it's the base URL itself or a known listing page
+                if href.rstrip("/") == base_url:
+                    continue
+
+                # Check if it has product-like patterns OR is a root-level page
+                # (WooCommerce often uses flat slugs like /product-name/)
+                is_product_pattern = any(p in href_lower for p in [
+                    "/products/", "/producto/", "/product/", "/p/",
+                    "/item/", "/tienda/", "/shop/"
+                ])
+
+                # For WooCommerce: check if link has add-to-cart data attributes
+                has_product_class = False
+                if a.get("class"):
+                    classes = " ".join(a["class"]).lower()
+                    has_product_class = any(c in classes for c in [
+                        "product", "woocommerce", "add_to_cart"
+                    ])
+
+                # Accept product-pattern links, product-class links,
+                # or root-level links from known WooCommerce sites
+                if is_product_pattern or has_product_class:
+                    candidate_links.add(href)
+                elif brand.get("platform") == "woocommerce":
+                    # WooCommerce flat slugs: accept if it's a simple /slug path
+                    path_part = href.replace(base_url, "").strip("/")
+                    if path_part and "/" not in path_part:
+                        # Skip known non-product slugs
+                        skip_slugs = [
+                            "coleccion", "collection", "categoria", "category",
+                            "tienda", "shop", "carrito", "cart", "checkout",
+                            "nosotras", "nosotros", "about", "contacto", "contact",
+                        ]
+                        if not any(path_part.lower().startswith(s) for s in skip_slugs):
+                            candidate_links.add(href)
+
+            if candidate_links:
+                break
+            time.sleep(1.0)
+        except Exception:
+            continue
+
+    # Remove already known
+    return [u for u in candidate_links if u.rstrip("/").lower() not in already_known]
+
+
+def _scrape_single_product_page(url, brand):
+    """Scrape a single product page for details"""
+    base_url = brand["url"].rstrip("/")
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=20, allow_redirects=True)
+        if resp.status_code != 200:
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Verify it's actually a product page (multiple signals)
+        has_price = bool(soup.find(class_="price") or soup.find(attrs={"itemprop": "price"})
+                         or soup.select_one("[class*='price']"))
+        has_cart = bool(soup.find(class_="single_add_to_cart_button")
+                        or soup.find("button", {"name": "add-to-cart"})
+                        or soup.find("form", {"action": "/cart/add"})  # Shopify
+                        or soup.find("form", class_="product-form"))
+        og_type = soup.find("meta", property="og:type")
+        is_og_product = og_type and og_type.get("content", "").lower() in ("product", "og:product")
+        has_product_schema = bool(soup.find(attrs={"itemtype": lambda v: v and "Product" in v})) if True else False
+
+        if not has_price and not has_cart and not is_og_product and not has_product_schema:
+            return None
+
+        # Extract name
+        name = ""
+        for selector in ["h1.product_title", "h1", ".product-title", "[itemprop='name']"]:
+            el = soup.select_one(selector)
+            if el:
+                name = el.get_text(strip=True)
+                break
+        if not name:
+            og_title = soup.find("meta", property="og:title")
+            name = og_title["content"].split(" - ")[0].strip() if og_title else url.split("/")[-1].replace("-", " ").title()
+
+        # Extract image
+        image_url = ""
+        og_img = soup.find("meta", property="og:image")
+        if og_img and og_img.get("content"):
+            image_url = og_img["content"]
+        else:
+            for sel in [".woocommerce-product-gallery img", ".product-image img", "img.wp-post-image"]:
+                img = soup.select_one(sel)
+                if img and img.get("src"):
+                    src = img["src"]
+                    if src.startswith("//"):
+                        src = "https:" + src
+                    elif src.startswith("/"):
+                        src = base_url + src
+                    image_url = src
+                    break
+
+        # Extract price (works across WooCommerce, Shopify, generic)
+        import re as re_mod
+        price = ""
+        for price_sel in [
+            ".price .woocommerce-Price-amount", "[itemprop='price']",
+            ".price", ".product-price", ".current-price",
+            "[class*='price']", "meta[property='product:price:amount']",
+        ]:
+            price_el = soup.select_one(price_sel)
+            if price_el:
+                if price_el.name == "meta":
+                    price = price_el.get("content", "")
+                else:
+                    price_text = price_el.get_text(strip=True)
+                    nums = re_mod.findall(r'[\d.,]+', price_text)
+                    if nums:
+                        price = nums[0].replace(".", "").replace(",", "")
+                if price:
+                    break
+
+        # Extract description
+        description = ""
+        og_desc = soup.find("meta", property="og:description")
+        if og_desc and og_desc.get("content"):
+            description = og_desc["content"][:500]
+
+        # All images (WooCommerce, Shopify, generic)
+        all_images = [image_url] if image_url else []
+        for img in soup.select(".woocommerce-product-gallery img, .product-images img, .thumbnails img, .product-gallery img, .product__media img, [class*='product'] img"):
+            src = img.get("data-large_image") or img.get("data-src") or img.get("src", "")
+            if src.startswith("//"):
+                src = "https:" + src
+            elif src.startswith("/"):
+                src = base_url + src
+            if src and src not in all_images:
+                all_images.append(src)
+            if len(all_images) >= 5:
+                break
+
+        return {
+            "brand": brand["name"],
+            "name": name,
+            "category": categorize([], name),
+            "price": price,
+            "image_url": image_url,
+            "all_images": all_images,
+            "product_url": url,
+            "description": description,
+            "available": True,
+            "tags": [],
+            "variants": [],
+            "created_at": "",
+        }
+    except Exception as e:
+        print(f"    Error scraping {url}: {e}")
+        return None
 
 
 def detect_platform(brand, progress_callback=None):
@@ -286,18 +550,39 @@ def detect_platform(brand, progress_callback=None):
 
 
 def crawl_html_scrape(brand, progress_callback=None):
-    """Fallback: scrape products from HTML pages for any platform"""
-    products = []
+    """Scrape products from HTML pages — uses sitemap + HTML navigation + page scraping"""
     base_url = brand["url"].rstrip("/")
+    known_urls = set()
+    products = []
 
-    if progress_callback:
-        progress_callback(f"Scraping HTML de {brand['name']}...")
+    def log(msg):
+        if progress_callback:
+            progress_callback(msg)
 
-    # Try common product listing paths
+    log(f"Scraping HTML de {brand['name']}...")
+
+    # ── PHASE 1: Try sitemaps first (most reliable for any platform) ────
+    sitemap_urls = _fetch_generic_sitemap_urls(base_url, brand.get("domain", ""))
+    if sitemap_urls:
+        log(f"{brand['name']}: {len(sitemap_urls)} URLs en sitemap, scrapeando...")
+        for i, purl in enumerate(sitemap_urls):
+            if i % 5 == 0:
+                log(f"{brand['name']}: producto {i+1}/{len(sitemap_urls)} (sitemap)")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
+
+    # ── PHASE 2: HTML navigation (explore shop/catalog pages) ───────────
+    log(f"{brand['name']}: buscando más en páginas de catálogo...")
+
     listing_paths = [
         "/collections/all", "/products", "/productos", "/tienda",
         "/shop", "/catalogo", "/collection/all", "/collections",
-        "/categoria-producto", "/product-category", "/"
+        "/categoria-producto", "/product-category", "/showroom",
+        "/coleccion", "/coleccion-2025", "/coleccion-2026",
+        "/new-arrivals", "/novedades", "/all", "/"
     ]
 
     product_links = set()
@@ -311,49 +596,49 @@ def crawl_html_scrape(brand, progress_callback=None):
 
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Find all links that look like product pages
             for a in soup.find_all("a", href=True):
                 href = a["href"]
-                # Normalize URL
                 if href.startswith("/"):
                     href = base_url + href
                 elif not href.startswith("http"):
                     continue
 
-                # Filter product-like URLs
                 href_lower = href.lower()
                 if any(skip in href_lower for skip in [
-                    "/cart", "/checkout", "/account", "/login", "/register",
-                    "/blog", "/pages/", "/policies", "/collections/all",
-                    ".js", ".css", ".png", ".jpg", "#", "javascript:",
-                    "/collections", "/categories", "/search"
+                    "/cart", "/carrito", "/checkout", "/account", "/login", "/register",
+                    "/blog", "/pages/", "/policies", "/politica", "/terminos",
+                    "/nosotras", "/nosotros", "/about", "/contacto", "/contact",
+                    ".js", ".css", ".png", ".jpg", "#", "javascript:", "mailto:",
+                    "/wp-login", "/wp-admin", "/feed", "/reembolso", "/envio",
+                    "/collections/all", "/categories", "/search", "/mi-cuenta",
                 ]):
                     continue
 
-                # Must be from same domain
                 if brand["domain"] not in href:
                     continue
 
-                # Product URLs usually have specific patterns
+                href_clean = href.split("?")[0].rstrip("/")
+                if href_clean.rstrip("/").lower() in known_urls:
+                    continue
+
                 if any(pattern in href_lower for pattern in [
                     "/products/", "/producto/", "/product/", "/p/",
                     "/item/", "/tienda/", "/shop/"
                 ]):
-                    product_links.add(href.split("?")[0].rstrip("/"))
+                    product_links.add(href_clean)
 
             if product_links:
-                break  # Found products, no need to try more paths
+                break
 
             time.sleep(1.5)
         except Exception as e:
             print(f"    Error scraping {path}: {e}")
             continue
 
-    # Also try paginated listing
+    # Paginated listing
     page = 2
     while len(product_links) > 0 and page <= 10:
         try:
-            # Common pagination patterns
             for pag_url in [
                 f"{base_url}/collections/all?page={page}",
                 f"{base_url}/products?page={page}",
@@ -371,7 +656,7 @@ def crawl_html_scrape(brand, progress_callback=None):
                         href = base_url + href
                     href_clean = href.split("?")[0].rstrip("/")
                     if brand["domain"] in href and any(p in href.lower() for p in ["/products/", "/producto/", "/product/"]):
-                        if href_clean not in product_links:
+                        if href_clean not in product_links and href_clean.rstrip("/").lower() not in known_urls:
                             product_links.add(href_clean)
                             new_links += 1
                 if new_links > 0:
@@ -383,107 +668,88 @@ def crawl_html_scrape(brand, progress_callback=None):
         except Exception:
             break
 
-    if not product_links:
-        print(f"    No product links found for {brand['name']}")
-        return []
+    # Scrape product links found via HTML
+    if product_links:
+        log(f"{brand['name']}: {len(product_links)} links encontrados en HTML, extrayendo datos...")
+        for i, link in enumerate(sorted(product_links)):
+            if i % 5 == 0:
+                log(f"{brand['name']}: producto {i+1}/{len(product_links)} (HTML)")
+            scraped = _scrape_single_product_page(link, brand)
+            if scraped:
+                known_urls.add(link.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
 
-    if progress_callback:
-        progress_callback(f"{brand['name']}: {len(product_links)} links encontrados, extrayendo datos...")
+    if not products:
+        print(f"    No products found for {brand['name']}")
 
-    # Now fetch each product page for details
-    for i, link in enumerate(sorted(product_links)):
-        if progress_callback and i % 5 == 0:
-            progress_callback(f"{brand['name']}: producto {i+1}/{len(product_links)}")
+    log(f"✓ {brand['name']}: {len(products)} productos totales")
+    return products
 
+
+def _fetch_generic_sitemap_urls(base_url, domain=""):
+    """Try common sitemap locations to discover product URLs for any platform"""
+    import xml.etree.ElementTree as ET
+
+    sitemap_paths = [
+        "/product-sitemap.xml",
+        "/wp-sitemap-posts-product-1.xml",
+        "/sitemap_products_1.xml",
+        "/sitemap.xml",
+    ]
+    product_urls = []
+    ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+
+    for path in sitemap_paths:
         try:
-            resp = requests.get(link, headers=HEADERS, timeout=20, allow_redirects=True)
+            resp = requests.get(f"{base_url}{path}", headers=HEADERS, timeout=15)
             if resp.status_code != 200:
                 continue
 
-            soup = BeautifulSoup(resp.text, "html.parser")
+            root = ET.fromstring(resp.content)
 
-            # Extract title
-            name = ""
-            for selector in ["h1", "h1.product-title", ".product-name", "[itemprop='name']"]:
-                el = soup.select_one(selector)
-                if el:
-                    name = el.get_text(strip=True)
+            # Check if it's a sitemap index (contains <sitemap> elements)
+            sub_sitemaps = root.findall('s:sitemap', ns)
+            if sub_sitemaps:
+                # Find product-related sub-sitemaps
+                for sm in sub_sitemaps:
+                    loc = sm.find('s:loc', ns)
+                    if loc is not None and 'product' in loc.text.lower():
+                        try:
+                            sm_resp = requests.get(loc.text, headers=HEADERS, timeout=15)
+                            if sm_resp.status_code != 200:
+                                continue
+                            sm_root = ET.fromstring(sm_resp.content)
+                            for url_el in sm_root.findall('s:url', ns):
+                                loc2 = url_el.find('s:loc', ns)
+                                if loc2 is not None:
+                                    u = loc2.text.strip()
+                                    if '/product' in u.lower() or (domain and domain in u):
+                                        product_urls.append(u)
+                        except Exception:
+                            continue
+                if product_urls:
                     break
-            if not name:
-                og_title = soup.find("meta", property="og:title")
-                name = og_title["content"] if og_title else link.split("/")[-1].replace("-", " ").title()
-
-            # Extract image
-            image_url = ""
-            og_img = soup.find("meta", property="og:image")
-            if og_img and og_img.get("content"):
-                image_url = og_img["content"]
             else:
-                for sel in [".product-image img", ".product img", "[itemprop='image']", "img.product"]:
-                    img = soup.select_one(sel)
-                    if img and img.get("src"):
-                        src = img["src"]
-                        if src.startswith("//"):
-                            src = "https:" + src
-                        elif src.startswith("/"):
-                            src = base_url + src
-                        image_url = src
-                        break
+                # Direct sitemap with <url> elements
+                for url_el in root.findall('s:url', ns):
+                    loc = url_el.find('s:loc', ns)
+                    if loc is not None:
+                        u = loc.text.strip()
+                        # For product-specific sitemaps, include all URLs except shop index
+                        if 'product' in path:
+                            skip_suffixes = ("/tienda/", "/shop/", "/tienda", "/shop")
+                            if not u.endswith(skip_suffixes) and u.rstrip("/") != base_url:
+                                product_urls.append(u)
+                        elif '/product' in u.lower():
+                            product_urls.append(u)
 
-            # Extract price
-            price = ""
-            for sel in [".price", "[itemprop='price']", ".product-price", ".current-price"]:
-                el = soup.select_one(sel)
-                if el:
-                    price_text = el.get_text(strip=True)
-                    # Extract numbers
-                    import re as re_mod
-                    nums = re_mod.findall(r'[\d.,]+', price_text)
-                    if nums:
-                        price = nums[0].replace(".", "").replace(",", "")
-                    break
-
-            # Extract description
-            description = ""
-            og_desc = soup.find("meta", property="og:description")
-            if og_desc and og_desc.get("content"):
-                description = og_desc["content"][:500]
-
-            # All images
-            all_images = [image_url] if image_url else []
-            for img in soup.select(".product-images img, .product-gallery img, .thumbnails img"):
-                src = img.get("src", "")
-                if src.startswith("//"):
-                    src = "https:" + src
-                elif src.startswith("/"):
-                    src = base_url + src
-                if src and src not in all_images:
-                    all_images.append(src)
-                if len(all_images) >= 5:
-                    break
-
-            products.append({
-                "brand": brand["name"],
-                "name": name,
-                "category": categorize([], name),
-                "price": price,
-                "image_url": image_url,
-                "all_images": all_images,
-                "product_url": link,
-                "description": description,
-                "available": True,
-                "tags": [],
-                "variants": [],
-                "created_at": "",
-            })
-
-            time.sleep(1.5)  # Be very respectful for HTML scraping
-
-        except Exception as e:
-            print(f"    Error scraping product {link}: {e}")
+            if product_urls:
+                break
+        except Exception:
             continue
 
-    return products
+    return product_urls
 
 
 def crawl_jumpseller(brand, progress_callback=None):
@@ -522,16 +788,20 @@ def crawl_brand(brand, progress_callback=None):
 
 
 def crawl_shopify(brand, progress_callback=None):
-    """Fetch all products from a Shopify store with robust retry logic"""
+    """Fetch all products from a Shopify store via API + sitemap + HTML fallback"""
     products = []
-    page = 1
-    base_url = brand["url"]
+    known_urls = set()
+    base_url = brand["url"].rstrip("/")
 
+    def log(msg):
+        if progress_callback:
+            progress_callback(msg)
+
+    # ── PHASE 1: Shopify JSON API ───────────────────────────────────────
+    page = 1
     while True:
         url = f"{base_url}/products.json?limit=250&page={page}"
-
-        if progress_callback:
-            progress_callback(f"Página {page} de {brand['name']}... ({len(products)} productos)")
+        log(f"API página {page} de {brand['name']}... ({len(products)} productos)")
 
         resp = fetch_with_retry(url)
         if resp is None:
@@ -581,6 +851,7 @@ def crawl_shopify(brand, progress_callback=None):
                     variant_titles.append(t)
             variant_titles = variant_titles[:6]
 
+            known_urls.add(product_url.rstrip("/").lower())
             products.append({
                 "brand": brand["name"],
                 "name": p.get("title", ""),
@@ -597,10 +868,87 @@ def crawl_shopify(brand, progress_callback=None):
             })
 
         page += 1
-        # Respectful delay between pages — 2 seconds minimum
         time.sleep(2.0)
 
+    log(f"{brand['name']}: {len(products)} vía API — buscando más en sitemap/HTML...")
+
+    # ── PHASE 2: Shopify sitemap ────────────────────────────────────────
+    sitemap_urls = _fetch_shopify_sitemap_urls(base_url)
+    missing_urls = [u for u in sitemap_urls if u.rstrip("/").lower() not in known_urls]
+
+    if missing_urls:
+        log(f"{brand['name']}: {len(missing_urls)} productos extra en sitemap, scrapeando...")
+        for i, purl in enumerate(missing_urls):
+            log(f"{brand['name']}: scrapeando extra {i+1}/{len(missing_urls)}")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
+
+    # ── PHASE 3: HTML navigation ────────────────────────────────────────
+    html_urls = _discover_product_urls_from_html(brand, known_urls)
+    if html_urls:
+        log(f"{brand['name']}: {len(html_urls)} productos extra en HTML, scrapeando...")
+        for i, purl in enumerate(html_urls):
+            log(f"{brand['name']}: scrapeando HTML {i+1}/{len(html_urls)}")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.5)
+
+    log(f"✓ {brand['name']}: {len(products)} productos totales")
     return products
+
+
+def _fetch_shopify_sitemap_urls(base_url):
+    """Fetch product URLs from Shopify sitemap"""
+    import xml.etree.ElementTree as ET
+
+    product_urls = []
+    try:
+        # Shopify main sitemap index
+        resp = requests.get(f"{base_url}/sitemap.xml", headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return []
+
+        root = ET.fromstring(resp.content)
+        ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+
+        # Find product sitemap URLs in the index
+        product_sitemap_urls = []
+        for sitemap in root.findall('s:sitemap', ns):
+            loc = sitemap.find('s:loc', ns)
+            if loc is not None and 'products' in loc.text.lower():
+                product_sitemap_urls.append(loc.text)
+
+        # If no index (direct sitemap), check for product URLs directly
+        if not product_sitemap_urls:
+            for url_el in root.findall('s:url', ns):
+                loc = url_el.find('s:loc', ns)
+                if loc is not None and '/products/' in loc.text:
+                    product_urls.append(loc.text.strip())
+            return product_urls
+
+        # Fetch each product sitemap
+        for sm_url in product_sitemap_urls:
+            try:
+                resp = requests.get(sm_url, headers=HEADERS, timeout=15)
+                if resp.status_code != 200:
+                    continue
+                sm_root = ET.fromstring(resp.content)
+                for url_el in sm_root.findall('s:url', ns):
+                    loc = url_el.find('s:loc', ns)
+                    if loc is not None and '/products/' in loc.text:
+                        product_urls.append(loc.text.strip())
+            except Exception:
+                continue
+
+    except Exception as e:
+        print(f"    Shopify sitemap error: {e}")
+
+    return product_urls
 
 
 def categorize(tags, title):
@@ -627,20 +975,29 @@ def categorize(tags, title):
 
 def filter_unwanted_products(products):
     """Remove kids products and non-fashion items"""
+    import re as re_mod
+
     EXCLUDE_KEYWORDS = [
         # Kids
         "niño", "niña", "niños", "niñas", "kids", "kid", "child", "children",
-        "bebé", "bebe", "baby", "infantil", "junior", "jr",
+        "bebé", "bebe", "baby", "infantil", "junior",
         # Non-fashion items
         "bolsa de compras", "bolsa regalo", "gift bag", "shopping bag",
         "gift card", "tarjeta de regalo", "giftcard", "tarjeta regalo",
         "embalaje", "packaging", "envoltorio", "wrapping",
         "vela", "candle", "incienso", "incense", "difusor",
         "sticker", "llavero", "keychain", "imán", "magnet",
-        "taza", "mug", "cup", "plato", "plate",
-        "libro", "book", "revista", "magazine",
-        "mascota", "pet", "perro", "dog", "gato", "cat",
+        "taza", "mug", "plato", "plate",
+        "libro", "revista", "magazine",
+        "mascota", "perro", "gato",
     ]
+
+    # Build regex pattern with word boundaries to avoid false positives
+    # e.g. "pet" should NOT match "petite", "book" should NOT match "facebook"
+    pattern = re_mod.compile(
+        r'\b(' + '|'.join(re_mod.escape(kw) for kw in EXCLUDE_KEYWORDS) + r')\b',
+        re_mod.IGNORECASE
+    )
 
     filtered = []
     for p in products:
@@ -648,14 +1005,10 @@ def filter_unwanted_products(products):
         text = (p.get("name", "") + " " + p.get("category", "") + " " +
                 " ".join(p.get("tags", []))).lower()
 
-        skip = False
-        for kw in EXCLUDE_KEYWORDS:
-            if kw in text:
-                skip = True
-                break
+        if pattern.search(text):
+            continue
 
-        if not skip:
-            filtered.append(p)
+        filtered.append(p)
 
     removed = len(products) - len(filtered)
     if removed > 0:
@@ -666,41 +1019,34 @@ def filter_unwanted_products(products):
 def deduplicate_products(products):
     """
     Remove duplicate products based on:
-    1. Same image URL (same product listed multiple times)
-    2. Same base name with different size/color suffix
+    1. Same product URL (canonical dedup key)
+    2. Same base name with different size/color suffix (variant dedup)
     Returns deduplicated list.
     """
-    seen_images = set()
+    seen_urls = set()
     seen_names = set()
     unique = []
 
+    import re as re_mod
+
     for p in products:
-        # Skip products with no image
-        img = p.get("image_url", "")
-        if not img:
+        # Primary dedup: by product URL (most reliable)
+        url = p.get("product_url", "").split("?")[0].rstrip("/").lower()
+        if url and url in seen_urls:
             continue
 
-        # Normalize image URL (remove size params for comparison)
-        img_key = img.split("?")[0].rstrip("/").lower()
-
-        # Skip if we've seen this exact image
-        if img_key in seen_images:
-            continue
-
-        # Normalize name: strip size/color suffixes like "/ S", "/ M", "- Negro", "Talla 38"
-        import re as re_mod
+        # Secondary dedup: normalize name to catch size/color variants
         raw_name = p.get("name", "")
-        # Remove common variant suffixes
         clean_name = re_mod.sub(r'\s*/\s*(XS|S|M|L|XL|XXL|XXXL|\d{2,3})\s*$', '', raw_name, flags=re_mod.IGNORECASE)
         clean_name = re_mod.sub(r'\s*-\s*(Negro|Blanco|Rojo|Azul|Verde|Beige|Crudo|Café|Gris|Rosa|Nude|Burdeo|Camel|Mostaza|Terracota|Ivory|Black|White|Red|Blue|Green)\s*$', '', clean_name, flags=re_mod.IGNORECASE)
         clean_name = re_mod.sub(r'\s*talla\s*\d+\s*$', '', clean_name, flags=re_mod.IGNORECASE)
         name_key = f"{p['brand']}|{clean_name.strip().lower()}"
 
-        # Skip if we've seen this name from the same brand
         if name_key in seen_names:
             continue
 
-        seen_images.add(img_key)
+        if url:
+            seen_urls.add(url)
         seen_names.add(name_key)
         unique.append(p)
 
@@ -711,6 +1057,9 @@ def deduplicate_products(products):
 crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                   "products_found": 0, "current_brand": "", "done": False}
 crawl_progress_queue = queue.Queue()
+
+# In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
+last_generated_xlsx = None
 
 
 def crawl_all(brands=None):
@@ -915,9 +1264,14 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
     ws.auto_filter.ref = f"A1:J{row - 1}"
     ws.freeze_panes = "A2"
 
+    # Save to disk
     wb.save(output_path)
+    # Also save to in-memory buffer for reliable download on ephemeral filesystems
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
     print(f"Plantilla: {len(previous_rows or [])} anteriores + {new_count} nuevos = {row - 2} total")
-    return output_path
+    return output_path, buf
 
 
 # ─── Parse previous spreadsheet ─────────────────────────────────────────
@@ -1211,10 +1565,17 @@ def action():
             save_session(session)
             return jsonify({"status": "ok", "skipped_brand": brand_to_skip})
     elif act == "finish":
+        global last_generated_xlsx
         # Generate accumulated spreadsheet: previous + new
         output_path = os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")
         previous_rows = session.get("previous_rows", [])
-        generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+        try:
+            _, last_generated_xlsx = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+        except Exception as e:
+            print(f"Error generating spreadsheet: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({"status": "error", "error": str(e)}), 500
         total = len(previous_rows) + len(session["accepted"])
         save_session(session)
         return jsonify({"status": "done", "count": len(session["accepted"]),
@@ -1225,12 +1586,33 @@ def action():
 
 
 @app.route("/download")
+@login_required
 def download():
-    """Download generated spreadsheet"""
+    """Download generated spreadsheet — tries disk first, then in-memory buffer"""
     path = os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")
+
+    # Try disk file first
     if os.path.exists(path):
-        return send_file(path, as_attachment=True, download_name="moder_plantilla_productos.xlsx")
-    return "No file generated yet", 404
+        try:
+            return send_file(path, as_attachment=True, download_name="moder_plantilla_productos.xlsx")
+        except Exception as e:
+            print(f"Error sending file from disk: {e}")
+
+    # Fallback: serve from in-memory buffer (works on ephemeral filesystems like Render)
+    if last_generated_xlsx is not None:
+        try:
+            last_generated_xlsx.seek(0)
+            return send_file(
+                last_generated_xlsx,
+                as_attachment=True,
+                download_name="moder_plantilla_productos.xlsx",
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            print(f"Error sending file from memory: {e}")
+            return jsonify({"error": f"Error al enviar archivo: {e}"}), 500
+
+    return jsonify({"error": "No se ha generado la planilla aún. Primero acepta productos y presiona Finalizar."}), 404
 
 
 @app.route("/reset", methods=["POST"])
