@@ -275,87 +275,129 @@ def _fetch_woo_sitemap_urls(base_url):
 
 
 def _discover_product_urls_from_html(brand, already_known):
-    """Navigate shop/catalog/collection pages to find product links not yet known"""
+    """Navigate shop/catalog/collection pages (with pagination) to find product links not yet known"""
     base_url = brand["url"].rstrip("/")
     domain = brand.get("domain", "")
 
     listing_paths = [
         "/tienda", "/shop", "/productos", "/catalogo", "/collections/all",
         "/collections", "/showroom", "/product-category", "/categoria-producto",
-        "/coleccion", "/coleccion-2025", "/coleccion-2026", "/"
+        "/coleccion", "/coleccion-2025", "/coleccion-2026",
+        "/nueva-coleccion", "/new-collection", "/all", "/"
     ]
 
     candidate_links = set()
 
-    for path in listing_paths:
-        try:
-            resp = requests.get(f"{base_url}{path}", headers=HEADERS, timeout=20, allow_redirects=True)
-            if resp.status_code != 200:
+    def _extract_product_links(soup):
+        """Extract product links from a parsed page"""
+        found = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"].split("?")[0].rstrip("/")
+            if href.startswith("/"):
+                href = base_url + href
+
+            # Must be same domain
+            if domain and domain not in href:
                 continue
-            soup = BeautifulSoup(resp.text, "html.parser")
+            if not href.startswith("http"):
+                continue
 
-            for a in soup.find_all("a", href=True):
-                href = a["href"].split("?")[0].rstrip("/")
-                if href.startswith("/"):
-                    href = base_url + href
+            href_lower = href.lower()
 
-                # Must be same domain
-                if domain and domain not in href:
-                    continue
-                if not href.startswith("http"):
-                    continue
+            # Skip clearly non-product pages
+            if any(skip in href_lower for skip in [
+                "/cart", "/carrito", "/checkout", "/account", "/login", "/register",
+                "/blog", "/pages/", "/policies", "/politica", "/terminos",
+                "/nosotras", "/nosotros", "/about", "/contacto", "/contact",
+                ".js", ".css", ".png", ".jpg", "#", "javascript:", "mailto:",
+                "/wp-login", "/wp-admin", "/feed", "/reembolso", "/envio",
+                "/collections/all", "/categories", "/search", "/mi-cuenta",
+                "/page/", "/categoria-producto/", "/product-category/",
+            ]):
+                continue
 
-                href_lower = href.lower()
+            # Skip if it's the base URL itself
+            if href.rstrip("/") == base_url:
+                continue
 
-                # Skip clearly non-product pages
-                if any(skip in href_lower for skip in [
-                    "/cart", "/carrito", "/checkout", "/account", "/login", "/register",
-                    "/blog", "/pages/", "/policies", "/politica", "/terminos",
-                    "/nosotras", "/nosotros", "/about", "/contacto", "/contact",
-                    ".js", ".css", ".png", ".jpg", "#", "javascript:", "mailto:",
-                    "/wp-login", "/wp-admin", "/feed", "/reembolso", "/envio",
-                    "/collections/all", "/categories", "/search", "/mi-cuenta",
-                ]):
-                    continue
+            # Check if it has product-like patterns
+            is_product_pattern = any(p in href_lower for p in [
+                "/products/", "/producto/", "/product/", "/p/",
+                "/item/", "/tienda/", "/shop/"
+            ])
 
-                # Skip if it's the base URL itself or a known listing page
-                if href.rstrip("/") == base_url:
-                    continue
-
-                # Check if it has product-like patterns OR is a root-level page
-                # (WooCommerce often uses flat slugs like /product-name/)
-                is_product_pattern = any(p in href_lower for p in [
-                    "/products/", "/producto/", "/product/", "/p/",
-                    "/item/", "/tienda/", "/shop/"
+            # For WooCommerce: check if link has add-to-cart data attributes
+            has_product_class = False
+            if a.get("class"):
+                classes = " ".join(a["class"]).lower()
+                has_product_class = any(c in classes for c in [
+                    "product", "woocommerce", "add_to_cart"
                 ])
 
-                # For WooCommerce: check if link has add-to-cart data attributes
-                has_product_class = False
-                if a.get("class"):
-                    classes = " ".join(a["class"]).lower()
-                    has_product_class = any(c in classes for c in [
-                        "product", "woocommerce", "add_to_cart"
-                    ])
+            # Accept product-pattern links, product-class links,
+            # or root-level links from known WooCommerce sites
+            if is_product_pattern or has_product_class:
+                found.add(href)
+            elif brand.get("platform") == "woocommerce":
+                # WooCommerce flat slugs: accept if it's a simple /slug path
+                path_part = href.replace(base_url, "").strip("/")
+                if path_part and "/" not in path_part:
+                    skip_slugs = [
+                        "coleccion", "collection", "categoria", "category",
+                        "tienda", "shop", "carrito", "cart", "checkout",
+                        "nosotras", "nosotros", "about", "contacto", "contact",
+                    ]
+                    if not any(path_part.lower().startswith(s) for s in skip_slugs):
+                        found.add(href)
+        return found
 
-                # Accept product-pattern links, product-class links,
-                # or root-level links from known WooCommerce sites
-                if is_product_pattern or has_product_class:
-                    candidate_links.add(href)
-                elif brand.get("platform") == "woocommerce":
-                    # WooCommerce flat slugs: accept if it's a simple /slug path
-                    path_part = href.replace(base_url, "").strip("/")
-                    if path_part and "/" not in path_part:
-                        # Skip known non-product slugs
-                        skip_slugs = [
-                            "coleccion", "collection", "categoria", "category",
-                            "tienda", "shop", "carrito", "cart", "checkout",
-                            "nosotras", "nosotros", "about", "contacto", "contact",
-                        ]
-                        if not any(path_part.lower().startswith(s) for s in skip_slugs):
-                            candidate_links.add(href)
+    for path in listing_paths:
+        try:
+            # Try the listing page + up to 5 pagination pages
+            for page_num in range(1, 6):
+                if page_num == 1:
+                    page_url = f"{base_url}{path}"
+                else:
+                    # WooCommerce pagination: /tienda/page/2/
+                    page_url = f"{base_url}{path}/page/{page_num}/"
 
-            if candidate_links:
-                break
+                resp = requests.get(page_url, headers=HEADERS, timeout=20, allow_redirects=True)
+                if resp.status_code != 200:
+                    break  # No more pagination pages
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                page_links = _extract_product_links(soup)
+                candidate_links.update(page_links)
+
+                # Check if there's a next page
+                has_next = bool(
+                    soup.find("a", class_="next") or
+                    soup.find("a", attrs={"rel": "next"}) or
+                    soup.find("link", attrs={"rel": "next"}) or
+                    soup.select_one(".woocommerce-pagination .next, .pagination .next, a.next.page-numbers")
+                )
+                if not has_next:
+                    break
+                time.sleep(1.0)
+
+            time.sleep(0.5)
+        except Exception:
+            continue
+
+    # Also check category pages if we found category links
+    category_urls = set()
+    for link in list(candidate_links):
+        link_lower = link.lower()
+        if any(cat in link_lower for cat in ["/categoria-producto/", "/product-category/", "/product_cat/"]):
+            category_urls.add(link)
+            candidate_links.discard(link)  # It's a category, not a product
+
+    for cat_url in category_urls:
+        try:
+            resp = requests.get(cat_url, headers=HEADERS, timeout=20, allow_redirects=True)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                candidate_links.update(_extract_product_links(soup))
             time.sleep(1.0)
         except Exception:
             continue
@@ -1588,7 +1630,8 @@ def action():
 @app.route("/download")
 @login_required
 def download():
-    """Download generated spreadsheet — tries disk first, then in-memory buffer"""
+    """Download generated spreadsheet — tries disk, memory, then regenerates from session"""
+    global last_generated_xlsx
     path = os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")
 
     # Try disk file first
@@ -1610,9 +1653,27 @@ def download():
             )
         except Exception as e:
             print(f"Error sending file from memory: {e}")
-            return jsonify({"error": f"Error al enviar archivo: {e}"}), 500
 
-    return jsonify({"error": "No se ha generado la planilla aún. Primero acepta productos y presiona Finalizar."}), 404
+    # Last resort: regenerate from session data if available
+    session = load_session()
+    if session.get("accepted"):
+        try:
+            previous_rows = session.get("previous_rows", [])
+            _, last_generated_xlsx = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
+            last_generated_xlsx.seek(0)
+            return send_file(
+                last_generated_xlsx,
+                as_attachment=True,
+                download_name="moder_plantilla_productos.xlsx",
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        except Exception as e:
+            print(f"Error regenerating spreadsheet: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"<html><body><h2>Error al generar planilla</h2><p>{e}</p><a href='/'>Volver</a></body></html>", 500
+
+    return "<html><body><h2>No se ha generado la planilla aún</h2><p>Primero acepta productos y presiona Finalizar.</p><a href='/'>Volver al inicio</a></body></html>", 404
 
 
 @app.route("/reset", methods=["POST"])
