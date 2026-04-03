@@ -87,8 +87,12 @@ def load_active_brands():
     return DEFAULT_BRANDS
 
 def save_active_brands(brands):
-    with open(BRANDS_FILE, "w") as f:
+    tmp_path = BRANDS_FILE + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(brands, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, BRANDS_FILE)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -108,8 +112,12 @@ def load_session():
     return {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
 
 def save_session(session):
-    with open(SESSION_FILE, "w") as f:
+    tmp_path = SESSION_FILE + ".tmp"
+    with open(tmp_path, "w") as f:
         json.dump(session, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, SESSION_FILE)
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
@@ -1170,9 +1178,15 @@ def crawl_all(brands=None):
     if total_before != len(all_products):
         print(f"Cross-brand dedup: {total_before} → {len(all_products)}")
 
-    # Save to cache
-    with open(CRAWL_CACHE, "w") as f:
-        json.dump({"products": all_products, "crawled_at": datetime.now().isoformat()}, f, ensure_ascii=False)
+    # Save to cache (atomic write: write to temp file first, then rename)
+    cache_data = {"products": all_products, "crawled_at": datetime.now().isoformat()}
+    tmp_path = CRAWL_CACHE + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(cache_data, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, CRAWL_CACHE)
+    print(f"Cache saved: {len(all_products)} products → {CRAWL_CACHE}")
 
     crawl_progress["status"] = "done"
     crawl_progress["done"] = True
@@ -1473,12 +1487,13 @@ def crawl():
 
     def run_crawl():
         crawl_all(active_brands)
-        # Reset session after crawl
+        # Reset curation index for new crawl, but preserve previous_urls/rows
         session = load_session()
         session["current_index"] = 0
         session["accepted"] = []
         session["rejected"] = []
         save_session(session)
+        print(f"Session reset for new curation (previous_urls preserved: {len(session.get('previous_urls', []))})")
 
     t = threading.Thread(target=run_crawl, daemon=True)
     t.start()
