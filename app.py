@@ -48,51 +48,112 @@ SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 
 DEFAULT_BRANDS = []  # Vacío — el usuario elige desde las sugeridas o agrega manualmente
 
-# Sugerencias de marcas chilenas curadas por MODÈR
-SUGGESTED_BRANDS = [
-    {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://www.cassiopeaofficial.com"},
-    {"name": "PARSOME", "domain": "parsome.cl", "url": "https://www.parsome.cl"},
-    {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://www.wearearde.com"},
-    {"name": "LA COT", "domain": "lacotmuet.cl", "url": "https://lacotmuet.cl", "platform": "woocommerce"},
-    {"name": "D.GARCÍA", "domain": "degarcia.cl", "url": "https://www.degarcia.cl"},
-    {"name": "ANTONIA FLUXÁ", "domain": "antoniafluxa.cl", "url": "https://www.antoniafluxa.cl"},
-    {"name": "OCHI AND CO.", "domain": "ochiandco.cl", "url": "https://www.ochiandco.cl"},
-    {"name": "FRANCA E IO", "domain": "francaeio.cl", "url": "https://www.francaeio.cl"},
-    {"name": "ATHAR", "domain": "atharshoes.cl", "url": "https://www.atharshoes.cl"},
-    {"name": "AMBAR", "domain": "tiendaambar.cl", "url": "https://www.tiendaambar.cl"},
-    {"name": "ANONIMATO SHOP", "domain": "anonimato.cl", "url": "https://www.anonimato.cl"},
-    {"name": "LOLITA LPK", "domain": "lpk.cl", "url": "https://www.lpk.cl"},
-    {"name": "MARINA MIA", "domain": "marinamia.cl", "url": "https://www.marinamia.cl"},
-    {"name": "DEBUT", "domain": "debut.cl", "url": "https://www.debut.cl"},
-    {"name": "VIELLA", "domain": "viella.cl", "url": "https://www.viella.cl"},
-    {"name": "LORAINE HOLMES", "domain": "loraineholmes.cl", "url": "https://www.loraineholmes.cl"},
-    {"name": "CANDELARIA PÉREZ", "domain": "candelariaperez.cl", "url": "https://www.candelariaperez.cl"},
-    {"name": "COCO LABEL", "domain": "cocolabel.cl", "url": "https://www.cocolabel.cl"},
-    {"name": "MARIA GULDMAN", "domain": "mariaguldman.cl", "url": "https://www.mariaguldman.cl"},
-    {"name": "CAROLINA FLORES", "domain": "carolinafloreshandmade.cl", "url": "https://www.carolinafloreshandmade.cl"},
-    {"name": "ADEU.", "domain": "adeu.cl", "url": "https://www.adeu.cl"},
-    {"name": "SAINTMALE", "domain": "saintmale.com", "url": "https://www.saintmale.com"},
-    {"name": "BORANGORA", "domain": "borangora.com", "url": "https://www.borangora.com"},
-    {"name": "CAIS.", "domain": "caiszapatos.com", "url": "https://www.caiszapatos.com"},
-    {"name": "MANTO SILVESTRE", "domain": "mantosilvestre.cl", "url": "https://www.mantosilvestre.cl"},
-    {"name": "BOADELA", "domain": "boadela.cl", "url": "https://www.boadela.cl"},
-]
+# ─── Countries ──────────────────────────────────────────────────────────
+COUNTRIES = {
+    "CL": {"name": "Chile", "flag": "🇨🇱", "currency": "CLP"},
+    "AR": {"name": "Argentina", "flag": "🇦🇷", "currency": "ARS"},
+    "MX": {"name": "México", "flag": "🇲🇽", "currency": "MXN"},
+    "CO": {"name": "Colombia", "flag": "🇨🇴", "currency": "COP"},
+    "ES": {"name": "España", "flag": "🇪🇸", "currency": "EUR"},
+}
+
+# Marcas sugeridas por país — cada país tiene su propio catálogo
+SUGGESTED_BRANDS_BY_COUNTRY = {
+    "CL": [
+        {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://www.cassiopeaofficial.com"},
+        {"name": "PARSOME", "domain": "parsome.cl", "url": "https://www.parsome.cl"},
+        {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://www.wearearde.com"},
+        {"name": "LA COT", "domain": "lacotmuet.cl", "url": "https://lacotmuet.cl", "platform": "woocommerce"},
+        {"name": "D.GARCÍA", "domain": "degarcia.cl", "url": "https://www.degarcia.cl"},
+        {"name": "ANTONIA FLUXÁ", "domain": "antoniafluxa.cl", "url": "https://www.antoniafluxa.cl"},
+        {"name": "OCHI AND CO.", "domain": "ochiandco.cl", "url": "https://www.ochiandco.cl"},
+        {"name": "FRANCA E IO", "domain": "francaeio.cl", "url": "https://www.francaeio.cl"},
+        {"name": "ATHAR", "domain": "atharshoes.cl", "url": "https://www.atharshoes.cl"},
+        {"name": "AMBAR", "domain": "tiendaambar.cl", "url": "https://www.tiendaambar.cl"},
+        {"name": "ANONIMATO SHOP", "domain": "anonimato.cl", "url": "https://www.anonimato.cl"},
+        {"name": "LOLITA LPK", "domain": "lpk.cl", "url": "https://www.lpk.cl"},
+        {"name": "MARINA MIA", "domain": "marinamia.cl", "url": "https://www.marinamia.cl"},
+        {"name": "DEBUT", "domain": "debut.cl", "url": "https://www.debut.cl"},
+        {"name": "VIELLA", "domain": "viella.cl", "url": "https://www.viella.cl"},
+        {"name": "LORAINE HOLMES", "domain": "loraineholmes.cl", "url": "https://www.loraineholmes.cl"},
+        {"name": "CANDELARIA PÉREZ", "domain": "candelariaperez.cl", "url": "https://www.candelariaperez.cl"},
+        {"name": "COCO LABEL", "domain": "cocolabel.cl", "url": "https://www.cocolabel.cl"},
+        {"name": "MARIA GULDMAN", "domain": "mariaguldman.cl", "url": "https://www.mariaguldman.cl"},
+        {"name": "CAROLINA FLORES", "domain": "carolinafloreshandmade.cl", "url": "https://www.carolinafloreshandmade.cl"},
+        {"name": "ADEU.", "domain": "adeu.cl", "url": "https://www.adeu.cl"},
+        {"name": "SAINTMALE", "domain": "saintmale.com", "url": "https://www.saintmale.com"},
+        {"name": "BORANGORA", "domain": "borangora.com", "url": "https://www.borangora.com"},
+        {"name": "CAIS.", "domain": "caiszapatos.com", "url": "https://www.caiszapatos.com"},
+        {"name": "MANTO SILVESTRE", "domain": "mantosilvestre.cl", "url": "https://www.mantosilvestre.cl"},
+        {"name": "BOADELA", "domain": "boadela.cl", "url": "https://www.boadela.cl"},
+    ],
+    "AR": [],
+    "MX": [],
+    "CO": [],
+    "ES": [],
+}
+
+# Flat list for backward compatibility
+SUGGESTED_BRANDS = SUGGESTED_BRANDS_BY_COUNTRY.get("CL", [])
+
+# ─── Country-aware file paths ───────────────────────────────────────────
+COUNTRY_FILE = os.path.join(DATA_DIR, "active_country.json")
+
+def load_active_country():
+    if os.path.exists(COUNTRY_FILE):
+        try:
+            with open(COUNTRY_FILE) as f:
+                data = json.load(f)
+                return data.get("country", "")
+        except (json.JSONDecodeError, IOError):
+            pass
+    return ""
+
+def save_active_country(country_code):
+    tmp_path = COUNTRY_FILE + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump({"country": country_code}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, COUNTRY_FILE)
+
+def get_brands_file_for_country(country_code):
+    """Each country gets its own active brands file"""
+    if country_code:
+        return os.path.join(DATA_DIR, f"active_brands_{country_code}.json")
+    return os.path.join(DATA_DIR, "active_brands.json")
+
+def get_cache_file_for_country(country_code):
+    """Each country gets its own crawl cache"""
+    if country_code:
+        return os.path.join(DATA_DIR, f"crawl_cache_{country_code}.json")
+    return CRAWL_CACHE
 
 BRANDS_FILE = os.path.join(DATA_DIR, "active_brands.json")
 
-def load_active_brands():
-    if os.path.exists(BRANDS_FILE):
-        with open(BRANDS_FILE) as f:
+def load_active_brands(country_code=None):
+    """Load active brands for a specific country (or legacy global file)"""
+    if country_code:
+        path = get_brands_file_for_country(country_code)
+    else:
+        path = BRANDS_FILE
+    if os.path.exists(path):
+        with open(path) as f:
             return json.load(f)
     return DEFAULT_BRANDS
 
-def save_active_brands(brands):
-    tmp_path = BRANDS_FILE + ".tmp"
+def save_active_brands(brands, country_code=None):
+    """Save active brands for a specific country (or legacy global file)"""
+    if country_code:
+        path = get_brands_file_for_country(country_code)
+    else:
+        path = BRANDS_FILE
+    tmp_path = path + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(brands, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp_path, BRANDS_FILE)
+    os.replace(tmp_path, path)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -184,8 +245,13 @@ def crawl_woocommerce(brand, progress_callback=None):
 
             prices = p.get("prices", {})
             price_raw = prices.get("price", "0")
+            minor_unit = prices.get("currency_minor_unit", 0)
             try:
-                price = str(int(price_raw) // 100) if len(price_raw) > 2 else price_raw
+                price_int = int(price_raw)
+                if minor_unit > 0:
+                    price = str(price_int // (10 ** minor_unit))
+                else:
+                    price = str(price_int)
             except (ValueError, TypeError):
                 price = price_raw
 
@@ -1395,51 +1461,91 @@ def logout():
 
 # ─── Routes ──────────────────────────────────────────────────────────────
 
+@app.route("/select-country", methods=["POST"])
+@login_required
+def select_country():
+    """Set the active country for this session"""
+    data = request.json
+    country_code = data.get("country", "").upper()
+    if country_code not in COUNTRIES:
+        return jsonify({"error": "Invalid country"}), 400
+    save_active_country(country_code)
+    return jsonify({"status": "ok", "country": country_code})
+
+
 @app.route("/")
 @login_required
 def index():
+    country = load_active_country()
+    if not country:
+        return render_template("index.html",
+                               selecting_country=True,
+                               countries=COUNTRIES,
+                               has_cache=False, product_count=0,
+                               accepted_count=0, rejected_count=0,
+                               previous_count=0, active_brands=[],
+                               suggested_brands=[], default_brands=[],
+                               active_country="", country_info={})
     session = load_session()
-    products = load_crawl_cache()
+    # Load country-specific cache and brands
+    cache_path = get_cache_file_for_country(country)
+    products = None
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path) as f:
+                data = json.load(f)
+                products = data.get("products", [])
+        except (json.JSONDecodeError, IOError):
+            pass
     has_cache = products is not None
-    active_brands = load_active_brands()
+    active_brands = load_active_brands(country)
+    suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
     return render_template("index.html",
+                           selecting_country=False,
+                           countries=COUNTRIES,
                            has_cache=has_cache,
                            product_count=len(products) if products else 0,
                            accepted_count=len(session.get("accepted", [])),
                            rejected_count=len(session.get("rejected", [])),
                            previous_count=len(session.get("previous_urls", [])),
                            active_brands=active_brands,
-                           suggested_brands=SUGGESTED_BRANDS,
-                           default_brands=DEFAULT_BRANDS)
+                           suggested_brands=suggested,
+                           default_brands=DEFAULT_BRANDS,
+                           active_country=country,
+                           country_info=COUNTRIES.get(country, {}))
 
 
 @app.route("/update-brands", methods=["POST"])
 def update_brands():
     """Update active brand list"""
+    country = load_active_country()
     data = request.json
     brands = data.get("brands", [])
-    save_active_brands(brands)
+    save_active_brands(brands, country)
     return jsonify({"status": "ok", "count": len(brands)})
 
 
 @app.route("/add-all-suggested", methods=["POST"])
 def add_all_suggested():
-    """Add all suggested brands at once"""
-    active = load_active_brands()
+    """Add all suggested brands at once for current country"""
+    country = load_active_country()
+    active = load_active_brands(country)
     active_domains = set(b["domain"] for b in active)
+    suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
     added = 0
-    for brand in SUGGESTED_BRANDS:
+    for brand in suggested:
         if brand["domain"] not in active_domains:
             active.append(brand)
             active_domains.add(brand["domain"])
             added += 1
-    save_active_brands(active)
+    save_active_brands(active, country)
     return jsonify({"status": "ok", "added": added, "total": len(active)})
 
 
 @app.route("/add-brand", methods=["POST"])
 def add_brand():
     """Add a custom brand by URL"""
+    country = load_active_country()
     data = request.json
     name = data.get("name", "").strip().upper()
     url = data.get("url", "").strip()
@@ -1455,14 +1561,14 @@ def add_brand():
     from urllib.parse import urlparse
     domain = urlparse(url).netloc.replace("www.", "")
 
-    active = load_active_brands()
+    active = load_active_brands(country)
     # Check not already present
     if any(b["domain"] == domain for b in active):
         return jsonify({"error": "Brand already exists"}), 400
 
     new_brand = {"name": name, "domain": domain, "url": url}
     active.append(new_brand)
-    save_active_brands(active)
+    save_active_brands(active, country)
 
     return jsonify({"status": "ok", "brand": new_brand})
 
@@ -1470,23 +1576,45 @@ def add_brand():
 @app.route("/remove-brand", methods=["POST"])
 def remove_brand():
     """Remove a brand from active list"""
+    country = load_active_country()
     data = request.json
     domain = data.get("domain", "")
-    active = load_active_brands()
+    active = load_active_brands(country)
     active = [b for b in active if b["domain"] != domain]
-    save_active_brands(active)
+    save_active_brands(active, country)
     return jsonify({"status": "ok", "count": len(active)})
+
+
+@app.route("/change-country", methods=["POST"])
+@login_required
+def change_country():
+    """Switch to a different country"""
+    save_active_country("")
+    return jsonify({"status": "ok"})
 
 
 @app.route("/crawl", methods=["POST"])
 def crawl():
     """Start crawling in background thread"""
-    active_brands = load_active_brands()
+    country = load_active_country()
+    active_brands = load_active_brands(country)
     if not active_brands:
         return jsonify({"error": "No brands selected"}), 400
 
+    # Use country-specific cache file
+    cache_file = get_cache_file_for_country(country)
+
     def run_crawl():
-        crawl_all(active_brands)
+        products = crawl_all(active_brands)
+        # Save to country-specific cache
+        cache_data = {"products": products, "crawled_at": datetime.now().isoformat(), "country": country}
+        tmp_path = cache_file + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(cache_data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, cache_file)
+        print(f"Country cache saved: {len(products)} products → {cache_file}")
         # Reset curation index for new crawl, but preserve previous_urls/rows
         session = load_session()
         session["current_index"] = 0
@@ -1540,8 +1668,21 @@ def upload_previous():
 @app.route("/curate")
 def curate():
     """Main curation interface"""
+    country = load_active_country()
     session = load_session()
-    products = load_crawl_cache()
+    # Load country-specific cache
+    cache_path = get_cache_file_for_country(country)
+    products = None
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path) as f:
+                data = json.load(f)
+                products = data.get("products", [])
+        except (json.JSONDecodeError, IOError):
+            pass
+    if not products:
+        # Fallback to legacy global cache
+        products = load_crawl_cache()
     if not products:
         return redirect(url_for("index"))
 

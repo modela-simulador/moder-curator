@@ -90,6 +90,42 @@
         <div class="logo">MODÈR</div>
         <div class="subtitle">Product Curator</div>
 
+        {% if selecting_country %}
+        <!-- Country Selection -->
+        <div class="card">
+            <h2 style="justify-content: center;">Selecciona el país</h2>
+            <p style="text-align: center;">Cada país tiene sus propias marcas y moneda. Los productos se organizan por país en la app.</p>
+            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 20px;">
+                {% for code, info in countries.items() %}
+                <button class="btn btn-secondary" onclick="selectCountry('{{ code }}')"
+                        style="display: flex; align-items: center; gap: 12px; justify-content: flex-start; padding: 16px 24px; font-size: 16px;">
+                    <span style="font-size: 28px;">{{ info.flag }}</span>
+                    <span style="font-weight: 600;">{{ info.name }}</span>
+                    <span style="margin-left: auto; font-size: 12px; color: #aaa;">{{ info.currency }}</span>
+                </button>
+                {% endfor %}
+            </div>
+        </div>
+        <script>
+            function selectCountry(code) {
+                fetch('/select-country', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ country: code })
+                }).then(() => location.reload());
+            }
+        </script>
+        {% else %}
+
+        <!-- Country badge -->
+        <div style="text-align: center; margin-bottom: 20px;">
+            <span style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; background: white; border-radius: 20px; font-size: 14px; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
+                {{ country_info.flag }} {{ country_info.name }}
+                <span style="font-size: 11px; color: #aaa;">({{ country_info.currency }})</span>
+                <span onclick="changeCountry()" style="cursor: pointer; margin-left: 4px; font-size: 12px; color: #0066cc;">Cambiar</span>
+            </span>
+        </div>
+
         <!-- Step 1: Previous spreadsheet -->
         <div class="card">
             <h2><span class="step-number">1</span> Planilla anterior</h2>
@@ -307,9 +343,18 @@
             fetch('/reset', { method: 'POST' }).then(() => location.reload());
         }
 
-        document.getElementById('brandUrl').addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') addCustomBrand();
-        });
+        function changeCountry() {
+            if (!confirm('Cambiar de país? Volverás a la selección de país.')) return;
+            fetch('/change-country', { method: 'POST' }).then(() => location.reload());
+        }
+
+        var brandUrlEl = document.getElementById('brandUrl');
+        if (brandUrlEl) {
+            brandUrlEl.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') addCustomBrand();
+            });
+        }
     </script>
+    {% endif %}
 </body>
 </html>
