@@ -37,7 +37,12 @@ def login_required(f):
     return decorated
 
 # ─── Config ──────────────────────────────────────────────────────────────
-DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+# Persistent disk on Render (survives redeploys), fallback to local dir
+PERSISTENT_DIR = "/opt/render/project/src/data"
+if os.path.isdir(PERSISTENT_DIR):
+    DATA_DIR = PERSISTENT_DIR
+else:
+    DATA_DIR = os.path.dirname(os.path.abspath(__file__))
 CRAWL_CACHE = os.path.join(DATA_DIR, "crawl_cache.json")
 SESSION_FILE = os.path.join(DATA_DIR, "session.json")
 
