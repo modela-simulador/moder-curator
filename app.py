@@ -1235,6 +1235,17 @@ def crawl_all(brands=None):
         else:
             print(f"  → {after} products")
 
+        # Guardar progreso parcial después de cada marca
+        # Así si el crawl se interrumpe, no se pierden los productos ya crawleados
+        partial_cache = {"products": all_products, "crawled_at": datetime.now().isoformat(), "partial": True}
+        try:
+            tmp_path = CRAWL_CACHE + ".partial.tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(partial_cache, f, ensure_ascii=False)
+            os.replace(tmp_path, CRAWL_CACHE)
+        except Exception:
+            pass
+
         # Wait between brands to be respectful
         if i < len(brands) - 1:
             time.sleep(3.0)
