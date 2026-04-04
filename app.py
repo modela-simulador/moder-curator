@@ -62,7 +62,7 @@ SUGGESTED_BRANDS_BY_COUNTRY = {
     "CL": [
         {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://www.cassiopeaofficial.com"},
         {"name": "PARSOME", "domain": "parsome.cl", "url": "https://www.parsome.cl"},
-        {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://www.wearearde.com"},
+        {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://wearearde.cl"},
         {"name": "LA COT", "domain": "lacotmuet.cl", "url": "https://lacotmuet.cl", "platform": "woocommerce"},
         {"name": "D.GARCÍA", "domain": "degarcia.cl", "url": "https://www.degarcia.cl"},
         {"name": "ANTONIA FLUXÁ", "domain": "antoniafluxa.cl", "url": "https://www.antoniafluxa.cl"},
