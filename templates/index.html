@@ -151,7 +151,12 @@
         <div class="card" id="step2">
             <h2><span class="step-number">2</span> Seleccionar marcas</h2>
             <p>Elige las marcas que quieres crawlear. Puedes agregar sugeridas o escribir nuevas.</p>
-            <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Marcas activas</div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px;">Marcas activas</div>
+                {% if active_brands %}
+                <button class="btn btn-small" onclick="removeAllBrands()" style="font-size: 11px; padding: 5px 12px; background: #fce4ec; color: #c62828; border: none;">Quitar todas</button>
+                {% endif %}
+            </div>
             <div class="brand-list" id="activeBrands">
                 {% for brand in active_brands %}
                 <div class="brand-chip active" data-domain="{{ brand.domain }}">
@@ -294,6 +299,12 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ domain })
             }).then(() => location.reload());
+        }
+
+        function removeAllBrands() {
+            if (!confirm('¿Quitar todas las marcas activas?')) return;
+            fetch('/remove-all-brands', { method: 'POST' })
+                .then(() => location.reload());
         }
 
         function startCrawl() {

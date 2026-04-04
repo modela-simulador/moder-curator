@@ -1597,6 +1597,15 @@ def remove_brand():
     return jsonify({"status": "ok", "count": len(active)})
 
 
+@app.route("/remove-all-brands", methods=["POST"])
+@login_required
+def remove_all_brands():
+    """Remove all brands from active list"""
+    country = load_active_country()
+    save_active_brands([], country)
+    return jsonify({"status": "ok", "count": 0})
+
+
 @app.route("/change-country", methods=["POST"])
 @login_required
 def change_country():
