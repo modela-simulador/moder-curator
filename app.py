@@ -1498,10 +1498,7 @@ def index():
         except (json.JSONDecodeError, IOError):
             pass
     active_brands = load_active_brands(country)
-    # Solo mostrar cache si hay marcas activas
-    has_cache = products is not None and len(active_brands) > 0
-    if not active_brands:
-        products = None
+    has_cache = products is not None and len(products) > 0
     suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
     return render_template("index.html",
                            selecting_country=False,
@@ -1542,10 +1539,6 @@ def add_all_suggested():
             active_domains.add(brand["domain"])
             added += 1
     save_active_brands(active, country)
-    # Invalidar cache — marcas cambiaron
-    cache_file = get_cache_file_for_country(country)
-    if os.path.exists(cache_file):
-        os.remove(cache_file)
     return jsonify({"status": "ok", "added": added, "total": len(active)})
 
 
@@ -1577,11 +1570,6 @@ def add_brand():
     active.append(new_brand)
     save_active_brands(active, country)
 
-    # Invalidar cache viejo — marcas cambiaron, necesita nuevo crawl
-    cache_file = get_cache_file_for_country(country)
-    if os.path.exists(cache_file):
-        os.remove(cache_file)
-
     return jsonify({"status": "ok", "brand": new_brand})
 
 
@@ -1594,10 +1582,6 @@ def remove_brand():
     active = load_active_brands(country)
     active = [b for b in active if b["domain"] != domain]
     save_active_brands(active, country)
-    # Invalidar cache — marcas cambiaron
-    cache_file = get_cache_file_for_country(country)
-    if os.path.exists(cache_file):
-        os.remove(cache_file)
     return jsonify({"status": "ok", "count": len(active)})
 
 
