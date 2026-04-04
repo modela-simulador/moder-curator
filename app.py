@@ -1178,6 +1178,7 @@ def deduplicate_products(products):
 crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                   "products_found": 0, "current_brand": "", "done": False}
 crawl_progress_queue = queue.Queue()
+crawl_lock = threading.Lock()  # Prevent concurrent crawls
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
 last_generated_xlsx = None
@@ -1601,6 +1602,10 @@ def crawl():
     if not active_brands:
         return jsonify({"error": "No brands selected"}), 400
 
+    # Prevent concurrent crawls
+    if not crawl_lock.acquire(blocking=False):
+        return jsonify({"error": "Ya hay un crawl en progreso. Espera a que termine."}), 429
+
     # Reset session at start of new crawl
     session = load_session()
     session["current_index"] = 0
@@ -1612,23 +1617,40 @@ def crawl():
     cache_file = get_cache_file_for_country(country)
 
     def run_crawl():
-        products = crawl_all(active_brands)
-        # Save to country-specific cache
-        cache_data = {"products": products, "crawled_at": datetime.now().isoformat(), "country": country}
-        tmp_path = cache_file + ".tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(cache_data, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, cache_file)
-        print(f"Country cache saved: {len(products)} products → {cache_file}")
-        # Reset curation index for new crawl, but preserve previous_urls/rows
-        session = load_session()
-        session["current_index"] = 0
-        session["accepted"] = []
-        session["rejected"] = []
-        save_session(session)
-        print(f"Session reset for new curation (previous_urls preserved: {len(session.get('previous_urls', []))})")
+        try:
+            print(f"🚀 Starting crawl for {len(active_brands)} brands in {country}...")
+            products = crawl_all(active_brands)
+            print(f"✅ Crawl complete: {len(products)} products from {len(active_brands)} brands")
+            # Save to country-specific cache
+            cache_data = {"products": products, "crawled_at": datetime.now().isoformat(), "country": country}
+            tmp_path = cache_file + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(cache_data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, cache_file)
+            print(f"💾 Cache saved: {len(products)} products → {cache_file}")
+            # Reset curation index for new crawl
+            session = load_session()
+            session["current_index"] = 0
+            session["accepted"] = []
+            session["rejected"] = []
+            save_session(session)
+        except Exception as e:
+            print(f"❌ CRAWL ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            # Notify frontend that crawl failed
+            crawl_progress_queue.put({
+                "done": True,
+                "error": str(e),
+                "message": f"Error: {str(e)[:100]}",
+                "products_found": 0,
+                "brand_idx": 0,
+                "brand_total": len(active_brands)
+            })
+        finally:
+            crawl_lock.release()
 
     t = threading.Thread(target=run_crawl, daemon=True)
     t.start()
