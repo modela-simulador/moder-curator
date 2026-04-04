@@ -213,21 +213,19 @@
             </div>
         </div>
 
-        <!-- Step 4: Curate -->
+        {% if has_cache %}
+        <!-- Acceso rápido al curado -->
         <div class="card">
-            <h2><span class="step-number">4</span> Curar productos</h2>
-            <p>Revisa cada producto. Agrega, rechaza, o termina cuando quieras.</p>
-            {% if has_cache %}
-            <a href="/curate" class="btn btn-primary" style="text-decoration:none; color:white;">Empezar a curar</a>
-            {% else %}
-            <button class="btn btn-primary" disabled>Primero crawlea los catálogos</button>
-            {% endif %}
+            <h2>✦ Productos listos para curar</h2>
+            <p>{{ product_count }} productos encontrados. Al terminar el crawl se abre automáticamente.</p>
+            <a href="/curate" class="btn btn-primary" style="text-decoration:none; color:white;">Continuar curado</a>
             {% if accepted_count > 0 %}
-            <a href="/download" class="btn btn-secondary" style="text-decoration:none; color:#1c1c1e;">
+            <a href="/download" class="btn btn-secondary" style="text-decoration:none; color:#1c1c1e; margin-top:8px;">
                 📥 Descargar planilla ({{ accepted_count }} productos)
             </a>
             {% endif %}
         </div>
+        {% endif %}
 
         <div style="text-align: center; margin-top: 30px;">
             <button onclick="resetSession()" style="background:none; border:none; color:#ccc; font-size:12px; cursor:pointer;">Reiniciar sesión</button>
@@ -328,21 +326,19 @@
                         if (p.done) {
                             evtSource.close();
                             document.getElementById('crawlProgressBar').style.width = '100%';
-                            document.getElementById('crawlMessage').textContent = '✅ Crawl completado. Cargando...';
-                            // Esperar un poco para que el archivo se escriba completamente
+                            document.getElementById('crawlMessage').textContent = '✅ Crawl completado. Iniciando curado...';
+                            // Ir directo al curado
                             setTimeout(() => {
-                                // Verificar que el cache existe antes de recargar
-                                fetch('/crawl-progress').then(r => r.text()).then(() => {
-                                    location.reload();
-                                }).catch(() => location.reload());
-                            }, 2000);
+                                window.location.href = '/curate';
+                            }, 1500);
                         }
                     };
                     evtSource.onerror = function() {
                         evtSource.close();
-                        // Esperar más tiempo en caso de error de conexión
                         document.getElementById('crawlMessage').textContent = 'Finalizando...';
-                        setTimeout(() => location.reload(), 3000);
+                        setTimeout(() => {
+                            window.location.href = '/curate';
+                        }, 2000);
                     };
                 });
         }
