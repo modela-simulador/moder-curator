@@ -173,6 +173,7 @@
                 <button class="btn btn-primary btn-small" onclick="addCustomBrand()">+</button>
             </div>
             <hr class="section-divider">
+            {% if suggested_brands %}
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                 <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px;">Marcas sugeridas</div>
                 <button class="btn btn-primary btn-small" onclick="addAllSuggested()" style="font-size: 11px; padding: 6px 14px;">Agregar todas</button>
@@ -189,6 +190,11 @@
                 </div>
                 {% endfor %}
             </div>
+            {% else %}
+            <div style="text-align: center; padding: 16px; font-size: 13px; color: #aaa;">
+                Todas las marcas sugeridas ya están activas
+            </div>
+            {% endif %}
         </div>
 
         <!-- Step 3: Crawl -->

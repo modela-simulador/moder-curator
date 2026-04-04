@@ -1511,7 +1511,9 @@ def index():
             pass
     active_brands = load_active_brands(country)
     has_cache = products is not None and len(products) > 0
-    suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
+    all_suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
+    active_domains = set(b["domain"] for b in active_brands)
+    suggested = [b for b in all_suggested if b["domain"] not in active_domains]
     return render_template("index.html",
                            selecting_country=False,
                            countries=COUNTRIES,
@@ -1598,7 +1600,6 @@ def remove_brand():
 
 
 @app.route("/remove-all-brands", methods=["POST"])
-@login_required
 def remove_all_brands():
     """Remove all brands from active list"""
     country = load_active_country()
