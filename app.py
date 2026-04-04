@@ -9,9 +9,8 @@ import json
 import io
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
 import threading
-import queue
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import time
@@ -1174,26 +1173,32 @@ def deduplicate_products(products):
     return unique
 
 
-# Global progress state for SSE
+# Global progress state — simple dict, read by polling endpoint
 crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                   "products_found": 0, "current_brand": "", "done": False}
-crawl_progress_queue = queue.Queue()
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
 last_generated_xlsx = None
 
 
-def crawl_all(brands=None):
-    """Crawl all brands, deduplicate, and cache results"""
+def crawl_all(brands=None, cache_file=None):
+    """Crawl all brands, deduplicate, and cache results.
+
+    Uses a global dict for progress (read by polling endpoint).
+    Saves partial cache after each brand for resilience.
+    """
     global crawl_progress
     if brands is None:
         brands = load_active_brands()
+    if cache_file is None:
+        cache_file = CRAWL_CACHE
 
     crawl_progress = {
         "status": "running", "message": "Iniciando...",
         "brand_idx": 0, "brand_total": len(brands),
-        "products_found": 0, "current_brand": "", "done": False
+        "products_found": 0, "current_brand": "", "done": False,
+        "failed_brands": []
     }
 
     all_products = []
@@ -1201,22 +1206,18 @@ def crawl_all(brands=None):
         crawl_progress["brand_idx"] = i + 1
         crawl_progress["current_brand"] = brand["name"]
         crawl_progress["message"] = f"Crawleando {brand['name']}... ({i+1}/{len(brands)})"
-        crawl_progress_queue.put(dict(crawl_progress))
 
         print(f"Crawling {brand['name']}...")
 
         def progress_cb(msg):
             crawl_progress["message"] = msg
-            crawl_progress_queue.put(dict(crawl_progress))
 
         products = crawl_brand(brand, progress_callback=progress_cb)
 
         if not products:
-            crawl_progress["message"] = f"⚠ {brand['name']}: sin acceso (API bloqueada o sitio no disponible)"
-            crawl_progress_queue.put(dict(crawl_progress))
-            if "failed_brands" not in crawl_progress:
-                crawl_progress["failed_brands"] = []
+            crawl_progress["message"] = f"⚠ {brand['name']}: sin acceso"
             crawl_progress["failed_brands"].append(brand["name"])
+            print(f"  → 0 products (failed)")
             time.sleep(2.0)
             continue
 
@@ -1227,50 +1228,47 @@ def crawl_all(brands=None):
         all_products.extend(products)
 
         crawl_progress["products_found"] = len(all_products)
-        crawl_progress["message"] = f"✓ {brand['name']}: {after} productos únicos"
-        crawl_progress_queue.put(dict(crawl_progress))
+        crawl_progress["message"] = f"✓ {brand['name']}: {after} productos"
 
         if before != after:
-            print(f"  → {before} products, {before - after} duplicates removed → {after} unique")
+            print(f"  → {before} products, {before - after} dupes removed → {after}")
         else:
             print(f"  → {after} products")
 
-        # Guardar progreso parcial después de cada marca
-        # Así si el crawl se interrumpe, no se pierden los productos ya crawleados
-        partial_cache = {"products": all_products, "crawled_at": datetime.now().isoformat(), "partial": True}
+        # Guardar cache parcial después de cada marca
         try:
-            tmp_path = CRAWL_CACHE + ".partial.tmp"
+            partial = {"products": all_products, "crawled_at": datetime.now().isoformat(), "partial": True}
+            tmp_path = cache_file + ".tmp"
             with open(tmp_path, "w") as f:
-                json.dump(partial_cache, f, ensure_ascii=False)
-            os.replace(tmp_path, CRAWL_CACHE)
-        except Exception:
-            pass
+                json.dump(partial, f, ensure_ascii=False)
+            os.replace(tmp_path, cache_file)
+        except Exception as e:
+            print(f"  ⚠ Partial cache save failed: {e}")
 
-        # Wait between brands to be respectful
+        # Esperar entre marcas
         if i < len(brands) - 1:
             time.sleep(3.0)
 
-    # Final cross-brand dedup
+    # Dedup final entre marcas
     total_before = len(all_products)
     all_products = deduplicate_products(all_products)
     if total_before != len(all_products):
         print(f"Cross-brand dedup: {total_before} → {len(all_products)}")
 
-    # Save to cache (atomic write: write to temp file first, then rename)
+    # Guardar cache final
     cache_data = {"products": all_products, "crawled_at": datetime.now().isoformat()}
-    tmp_path = CRAWL_CACHE + ".tmp"
+    tmp_path = cache_file + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(cache_data, f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp_path, CRAWL_CACHE)
-    print(f"Cache saved: {len(all_products)} products → {CRAWL_CACHE}")
+    os.replace(tmp_path, cache_file)
+    print(f"Cache saved: {len(all_products)} products → {cache_file}")
 
     crawl_progress["status"] = "done"
     crawl_progress["done"] = True
     crawl_progress["products_found"] = len(all_products)
-    crawl_progress["message"] = f"✅ Listo: {len(all_products)} productos únicos de {len(brands)} marcas"
-    crawl_progress_queue.put(dict(crawl_progress))
+    crawl_progress["message"] = f"✅ Listo: {len(all_products)} productos de {len(brands)} marcas"
 
     return all_products
 
@@ -1640,36 +1638,15 @@ def crawl():
     def run_crawl():
         try:
             print(f"🚀 Starting crawl for {len(active_brands)} brands in {country}...")
-            products = crawl_all(active_brands)
+            products = crawl_all(active_brands, cache_file=cache_file)
             print(f"✅ Crawl complete: {len(products)} products from {len(active_brands)} brands")
-            # Save to country-specific cache
-            cache_data = {"products": products, "crawled_at": datetime.now().isoformat(), "country": country}
-            tmp_path = cache_file + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(cache_data, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, cache_file)
-            print(f"💾 Cache saved: {len(products)} products → {cache_file}")
-            # Reset curation index for new crawl
-            session = load_session()
-            session["current_index"] = 0
-            session["accepted"] = []
-            session["rejected"] = []
-            save_session(session)
         except Exception as e:
             print(f"❌ CRAWL ERROR: {e}")
             import traceback
             traceback.print_exc()
-            # Notify frontend that crawl failed
-            crawl_progress_queue.put({
-                "done": True,
-                "error": str(e),
-                "message": f"Error: {str(e)[:100]}",
-                "products_found": 0,
-                "brand_idx": 0,
-                "brand_total": len(active_brands)
-            })
+            crawl_progress["done"] = True
+            crawl_progress["status"] = "error"
+            crawl_progress["message"] = f"Error: {str(e)[:100]}"
         finally:
             crawl_lock.release()
 
@@ -1679,21 +1656,9 @@ def crawl():
 
 
 @app.route("/crawl-progress")
-def crawl_progress_stream():
-    """SSE endpoint for crawl progress"""
-    def generate():
-        while True:
-            try:
-                progress = crawl_progress_queue.get(timeout=30)
-                data = json.dumps(progress, ensure_ascii=False)
-                yield f"data: {data}\n\n"
-                if progress.get("done"):
-                    break
-            except queue.Empty:
-                yield f"data: {json.dumps({'status': 'waiting', 'message': 'Procesando...'})}\n\n"
-
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+def crawl_progress_endpoint():
+    """Polling endpoint — returns current crawl progress as JSON"""
+    return jsonify(crawl_progress)
 
 
 @app.route("/upload-previous", methods=["POST"])
