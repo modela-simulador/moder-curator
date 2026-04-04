@@ -1497,8 +1497,11 @@ def index():
                 products = data.get("products", [])
         except (json.JSONDecodeError, IOError):
             pass
-    has_cache = products is not None
     active_brands = load_active_brands(country)
+    # Solo mostrar cache si hay marcas activas
+    has_cache = products is not None and len(active_brands) > 0
+    if not active_brands:
+        products = None
     suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
     return render_template("index.html",
                            selecting_country=False,
