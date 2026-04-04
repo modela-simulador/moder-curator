@@ -1757,7 +1757,13 @@ def action():
         # Reject ALL remaining products from this brand
         brand_to_skip = data.get("brand", "")
         if brand_to_skip:
-            products = load_crawl_cache() or []
+            country = load_active_country()
+            cache_file = get_cache_file_for_country(country)
+            if os.path.exists(cache_file):
+                with open(cache_file) as f:
+                    products = json.load(f).get("products", [])
+            else:
+                products = load_crawl_cache() or []
             previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
             processed = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []))
             processed.update(u.rstrip("/") for u in session.get("rejected", []))

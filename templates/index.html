@@ -328,12 +328,21 @@
                         if (p.done) {
                             evtSource.close();
                             document.getElementById('crawlProgressBar').style.width = '100%';
-                            setTimeout(() => location.reload(), 1500);
+                            document.getElementById('crawlMessage').textContent = '✅ Crawl completado. Cargando...';
+                            // Esperar un poco para que el archivo se escriba completamente
+                            setTimeout(() => {
+                                // Verificar que el cache existe antes de recargar
+                                fetch('/crawl-progress').then(r => r.text()).then(() => {
+                                    location.reload();
+                                }).catch(() => location.reload());
+                            }, 2000);
                         }
                     };
                     evtSource.onerror = function() {
                         evtSource.close();
-                        setTimeout(() => location.reload(), 2000);
+                        // Esperar más tiempo en caso de error de conexión
+                        document.getElementById('crawlMessage').textContent = 'Finalizando...';
+                        setTimeout(() => location.reload(), 3000);
                     };
                 });
         }
