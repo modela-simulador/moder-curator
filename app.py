@@ -1601,6 +1601,13 @@ def crawl():
     if not active_brands:
         return jsonify({"error": "No brands selected"}), 400
 
+    # Reset session at start of new crawl
+    session = load_session()
+    session["current_index"] = 0
+    session["accepted"] = []
+    session["rejected"] = []
+    save_session(session)
+
     # Use country-specific cache file
     cache_file = get_cache_file_for_country(country)
 
@@ -1786,8 +1793,13 @@ def action():
             traceback.print_exc()
             return jsonify({"status": "error", "error": str(e)}), 500
         total = len(previous_rows) + len(session["accepted"])
+        accepted_count = len(session["accepted"])
+        # Reset session after generating spreadsheet
+        session["current_index"] = 0
+        session["accepted"] = []
+        session["rejected"] = []
         save_session(session)
-        return jsonify({"status": "done", "count": len(session["accepted"]),
+        return jsonify({"status": "done", "count": accepted_count,
                         "previous": len(previous_rows), "total": total, "path": output_path})
 
     save_session(session)
