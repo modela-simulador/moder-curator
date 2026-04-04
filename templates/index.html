@@ -309,37 +309,59 @@
                         document.getElementById('crawlBtn').disabled = false;
                         return;
                     }
-                    // Start listening for progress via SSE
-                    const evtSource = new EventSource('/crawl-progress');
-                    evtSource.onmessage = function(event) {
-                        const p = JSON.parse(event.data);
-                        document.getElementById('crawlMessage').textContent = p.message || 'Procesando...';
-                        document.getElementById('crawlProductCount').textContent = (p.products_found || 0) + ' productos';
+                    // Start listening for progress via SSE with auto-reconnect
+                    let reconnectAttempts = 0;
+                    const maxReconnects = 50;  // Enough for 26 brands × ~30s each
 
-                        if (p.brand_total > 0) {
-                            const pct = Math.round((p.brand_idx / p.brand_total) * 100);
-                            document.getElementById('crawlProgressBar').style.width = pct + '%';
-                            document.getElementById('crawlBrandInfo').textContent =
-                                'Marca ' + p.brand_idx + ' de ' + p.brand_total;
-                        }
+                    function connectSSE() {
+                        const evtSource = new EventSource('/crawl-progress');
 
-                        if (p.done) {
+                        evtSource.onmessage = function(event) {
+                            reconnectAttempts = 0;  // Reset on successful message
+                            const p = JSON.parse(event.data);
+                            document.getElementById('crawlMessage').textContent = p.message || 'Procesando...';
+                            document.getElementById('crawlProductCount').textContent = (p.products_found || 0) + ' productos';
+
+                            if (p.brand_total > 0) {
+                                const pct = Math.round((p.brand_idx / p.brand_total) * 100);
+                                document.getElementById('crawlProgressBar').style.width = pct + '%';
+                                document.getElementById('crawlBrandInfo').textContent =
+                                    'Marca ' + p.brand_idx + ' de ' + p.brand_total;
+                            }
+
+                            if (p.done) {
+                                evtSource.close();
+                                document.getElementById('crawlProgressBar').style.width = '100%';
+                                document.getElementById('crawlMessage').textContent = '✅ Crawl completado. Iniciando curado...';
+                                setTimeout(() => {
+                                    window.location.href = '/curate';
+                                }, 1500);
+                            }
+
+                            if (p.error) {
+                                evtSource.close();
+                                document.getElementById('crawlMessage').textContent = '❌ Error: ' + p.error;
+                                document.getElementById('crawlBtn').disabled = false;
+                            }
+                        };
+
+                        evtSource.onerror = function() {
                             evtSource.close();
-                            document.getElementById('crawlProgressBar').style.width = '100%';
-                            document.getElementById('crawlMessage').textContent = '✅ Crawl completado. Iniciando curado...';
-                            // Ir directo al curado
-                            setTimeout(() => {
-                                window.location.href = '/curate';
-                            }, 1500);
-                        }
-                    };
-                    evtSource.onerror = function() {
-                        evtSource.close();
-                        document.getElementById('crawlMessage').textContent = 'Finalizando...';
-                        setTimeout(() => {
-                            window.location.href = '/curate';
-                        }, 2000);
-                    };
+                            reconnectAttempts++;
+                            if (reconnectAttempts < maxReconnects) {
+                                // Reconectar — no redirigir
+                                document.getElementById('crawlMessage').textContent =
+                                    'Reconectando... (' + reconnectAttempts + ')';
+                                setTimeout(connectSSE, 3000);
+                            } else {
+                                // Demasiados reconectos — redirigir
+                                document.getElementById('crawlMessage').textContent = 'Verificando resultados...';
+                                setTimeout(() => { window.location.href = '/curate'; }, 2000);
+                            }
+                        };
+                    }
+
+                    connectSSE();
                 });
         }
 
