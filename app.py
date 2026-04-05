@@ -59,14 +59,14 @@ COUNTRIES = {
 # Marcas sugeridas por país — cada país tiene su propio catálogo
 SUGGESTED_BRANDS_BY_COUNTRY = {
     "CL": [
-        {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://www.cassiopeaofficial.com"},
+        {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://shop.cassiopeaofficial.com"},
         {"name": "PARSOME", "domain": "parsome.cl", "url": "https://www.parsome.cl"},
         {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://wearearde.cl"},
         {"name": "LA COT", "domain": "lacotmuet.cl", "url": "https://lacotmuet.cl", "platform": "woocommerce"},
         {"name": "D.GARCÍA", "domain": "degarcia.cl", "url": "https://www.degarcia.cl"},
         {"name": "ANTONIA FLUXÁ", "domain": "antoniafluxa.cl", "url": "https://www.antoniafluxa.cl"},
         {"name": "OCHI AND CO.", "domain": "ochiandco.cl", "url": "https://www.ochiandco.cl"},
-        {"name": "FRANCA E IO", "domain": "francaeio.cl", "url": "https://www.francaeio.cl"},
+        {"name": "FRANCA E IO", "domain": "francaeio.cl", "url": "https://www.francaeio.cl", "platform": "jumpseller"},
         {"name": "ATHAR", "domain": "atharshoes.cl", "url": "https://www.atharshoes.cl"},
         {"name": "AMBAR", "domain": "tiendaambar.cl", "url": "https://www.tiendaambar.cl"},
         {"name": "ANONIMATO SHOP", "domain": "anonimato.cl", "url": "https://www.anonimato.cl"},
@@ -627,39 +627,23 @@ def detect_platform(brand, progress_callback=None):
     except Exception:
         pass
 
-    # 3. Try Jumpseller API
-    log(f"Probando Jumpseller en {brand['name']}...")
-    try:
-        resp = requests.get(f"{base_url}/products", headers=HEADERS, timeout=15, allow_redirects=True)
-        if resp.status_code == 200 and "jumpseller" in resp.text.lower():
-            return "jumpseller"
-    except Exception:
-        pass
-
-    # 4. Try Tiendanube
-    log(f"Probando Tiendanube en {brand['name']}...")
-    try:
-        resp = requests.get(base_url, headers=HEADERS, timeout=15, allow_redirects=True)
-        if resp.status_code == 200:
-            html = resp.text.lower()
-            if "tiendanube" in html or "nuvemshop" in html:
-                return "tiendanube"
-    except Exception:
-        pass
-
-    # 5. Detect from homepage HTML (VTEX, PrestaShop, Magento, generic)
+    # 3-5. Detect from homepage HTML (single request)
     log(f"Analizando HTML de {brand['name']}...")
     try:
         resp = requests.get(base_url, headers=HEADERS, timeout=15, allow_redirects=True)
         if resp.status_code == 200:
             html = resp.text.lower()
+            if "jumpseller" in html:
+                return "jumpseller"
+            if "tiendanube" in html or "nuvemshop" in html:
+                return "tiendanube"
             if "vtex" in html or "vteximg" in html:
                 return "vtex"
-            elif "prestashop" in html or "presta" in html:
+            if "prestashop" in html:
                 return "prestashop"
-            elif "magento" in html or "mage" in html:
+            # Magento: specific markers (not just "mage" which matches "image")
+            if "magento" in html or "mage-init" in html or "mage/cookies" in html:
                 return "magento"
-            # If it has product links, we can try HTML scraping
             if '/product' in html or '/productos' in html or '/collections' in html:
                 return "html_scrape"
     except Exception:
@@ -873,8 +857,97 @@ def _fetch_generic_sitemap_urls(base_url, domain=""):
 
 
 def crawl_jumpseller(brand, progress_callback=None):
-    """Crawl a Jumpseller store via HTML"""
-    return crawl_html_scrape(brand, progress_callback)
+    """Crawl a Jumpseller store — uses sitemap + homepage product detection.
+
+    Jumpseller stores often use flat URLs (e.g., /miuccia, /eloise) without
+    /products/ prefix, so the generic HTML scraper misses them. This crawler
+    parses the sitemap and tries each non-page URL as a potential product.
+    """
+    base_url = brand["url"].rstrip("/")
+    domain = brand.get("domain", "")
+    products = []
+    known_urls = set()
+
+    def log(msg):
+        if progress_callback:
+            progress_callback(msg)
+
+    log(f"Crawleando Jumpseller: {brand['name']}...")
+
+    # Non-product path segments to skip
+    SKIP_SLUGS = {
+        "blog", "contact", "contacto", "conocenos", "about", "nosotras", "nosotros",
+        "cart", "carrito", "checkout", "customer", "login", "register",
+        "despachos", "envio", "envios", "politica-de-privacidad", "politica-de-reembolso",
+        "politicas-de-cambio", "terminos-y-condiciones", "terminos", "condiciones",
+        "como-cuidar-mi-zapato", "faq", "preguntas-frecuentes",
+        "pages", "policies", "search", "collections", "categories",
+    }
+
+    # ── PHASE 1: Sitemap — try to scrape each non-page URL ──────────
+    import xml.etree.ElementTree as ET
+    candidate_urls = []
+
+    try:
+        resp = requests.get(f"{base_url}/sitemap.xml", headers=HEADERS, timeout=15)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.content)
+            ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+            for url_el in root.findall('s:url', ns):
+                loc = url_el.find('s:loc', ns)
+                if loc is None:
+                    continue
+                u = loc.text.strip().rstrip("/")
+                if u == base_url:
+                    continue
+                # Extract the slug (path after domain)
+                slug = u.replace(base_url, "").strip("/").split("/")[0].lower()
+                if slug and slug not in SKIP_SLUGS:
+                    candidate_urls.append(u)
+    except Exception as e:
+        print(f"    Jumpseller sitemap error: {e}")
+
+    if candidate_urls:
+        log(f"{brand['name']}: {len(candidate_urls)} URLs en sitemap, verificando cuáles son productos...")
+        for i, purl in enumerate(candidate_urls):
+            if i % 5 == 0:
+                log(f"{brand['name']}: verificando {i+1}/{len(candidate_urls)}")
+            scraped = _scrape_single_product_page(purl, brand)
+            if scraped:
+                known_urls.add(purl.rstrip("/").lower())
+                products.append(scraped)
+            time.sleep(1.0)
+
+    # ── PHASE 2: Homepage links — catch anything not in sitemap ──────
+    if not products:
+        log(f"{brand['name']}: buscando productos en homepage...")
+        try:
+            resp = requests.get(base_url, headers=HEADERS, timeout=20)
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for a in soup.find_all("a", href=True):
+                    href = a["href"].split("?")[0].rstrip("/")
+                    if href.startswith("/"):
+                        href = base_url + href
+                    if not href.startswith("http") or (domain and domain not in href):
+                        continue
+                    slug = href.replace(base_url, "").strip("/").split("/")[0].lower()
+                    if slug and slug not in SKIP_SLUGS and href.rstrip("/").lower() not in known_urls:
+                        candidate_urls.append(href)
+
+                for purl in candidate_urls:
+                    if purl.rstrip("/").lower() in known_urls:
+                        continue
+                    scraped = _scrape_single_product_page(purl, brand)
+                    if scraped:
+                        known_urls.add(purl.rstrip("/").lower())
+                        products.append(scraped)
+                    time.sleep(1.0)
+        except Exception as e:
+            print(f"    Homepage scrape error: {e}")
+
+    log(f"✓ {brand['name']}: {len(products)} productos totales")
+    return products
 
 
 def crawl_tiendanube(brand, progress_callback=None):
