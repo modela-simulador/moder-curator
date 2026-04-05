@@ -1672,9 +1672,11 @@ def remove_brand():
 
 @app.route("/remove-all-brands", methods=["POST"])
 def remove_all_brands():
-    """Remove all brands from active list"""
+    """Remove all brands from active list and clear curation session"""
     country = load_active_country()
     save_active_brands([], country)
+    # Clear curation session and cache
+    clear_curation_session(country)
     return jsonify({"status": "ok", "count": 0})
 
 
@@ -1936,10 +1938,47 @@ def download():
     return "<html><body><h2>No se ha generado la planilla aún</h2><p>Primero acepta productos y presiona Finalizar.</p><a href='/'>Volver al inicio</a></body></html>", 404
 
 
+@app.route("/cancel-curation", methods=["POST"])
+def cancel_curation():
+    """Cancel active curation — clears session, cache, and stops crawl"""
+    global crawl_progress
+    country = load_active_country()
+    clear_curation_session(country)
+    # Force-release crawl lock if stuck
+    if crawl_lock.locked():
+        try:
+            crawl_lock.release()
+        except RuntimeError:
+            pass
+    crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
+                      "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
+    return jsonify({"status": "ok", "message": "Curación cancelada. Sesión limpia."})
+
+
+def clear_curation_session(country=None):
+    """Clear all curation data — session, cache, crawl state"""
+    global crawl_progress
+    # Clear session file
+    if os.path.exists(SESSION_FILE):
+        os.remove(SESSION_FILE)
+    # Clear cache for this country
+    if country:
+        cache = get_cache_file_for_country(country)
+        if os.path.exists(cache):
+            os.remove(cache)
+    # Clear general cache
+    if os.path.exists(CRAWL_CACHE):
+        os.remove(CRAWL_CACHE)
+    # Reset progress
+    crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
+                      "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
+
+
 @app.route("/reset", methods=["POST"])
 def reset():
     """Reset everything — session, cache, brands"""
-    for f in [SESSION_FILE, CRAWL_CACHE, BRANDS_FILE,
+    clear_curation_session(load_active_country())
+    for f in [BRANDS_FILE,
               os.path.join(DATA_DIR, "previous_upload.xlsx"),
               os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")]:
         if os.path.exists(f):
