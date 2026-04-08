@@ -367,7 +367,11 @@
                             })
                             .catch(() => {
                                 // Fetch falló — seguir intentando, no parar
-                                document.getElementById('crawlMessage').textContent = 'Esperando respuesta del servidor...';
+                                // Don't overwrite progress message on transient network errors
+                                const msg = document.getElementById('crawlMessage').textContent;
+                                if (!msg || msg === 'Iniciando...') {
+                                    document.getElementById('crawlMessage').textContent = 'Conectando con el servidor...';
+                                }
                             });
                     }, 2000);
                 });
