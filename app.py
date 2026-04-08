@@ -116,12 +116,28 @@ SUGGESTED_BRANDS = SUGGESTED_BRANDS_BY_COUNTRY.get("CL", [])
 COUNTRY_FILE = os.path.join(DATA_DIR, "active_country.json")
 
 def load_active_country():
-    """Per-user country from Flask session"""
-    return flask_session.get("active_country", "")
+    """Per-user country from Flask session, with Firestore fallback"""
+    cc = flask_session.get("active_country", "")
+    if not cc:
+        # Fallback: try Firestore per-user country
+        uid = get_user_id()
+        fs = load_country_firestore()
+        if fs and isinstance(fs, dict):
+            cc = fs.get(uid, "")
+        elif fs and isinstance(fs, str):
+            cc = fs
+        if cc:
+            flask_session["active_country"] = cc
+    return cc
 
 def save_active_country(country_code):
-    """Per-user country in Flask session"""
+    """Per-user country in Flask session + Firestore backup"""
     flask_session["active_country"] = country_code
+    try:
+        uid = get_user_id()
+        save_country_firestore({uid: country_code})
+    except Exception:
+        pass
 
 def get_brands_file_for_country(country_code):
     """Each country gets its own active brands file"""
@@ -1867,7 +1883,8 @@ def upload_previous():
     if not file:
         return jsonify({"error": "No file"}), 400
 
-    path = os.path.join(DATA_DIR, "previous_upload.xlsx")
+    uid = get_user_id()
+    path = os.path.join(DATA_DIR, f"previous_upload_{uid}.xlsx")
     file.save(path)
     urls, rows_data = parse_previous_spreadsheet(path)
 
@@ -2138,7 +2155,8 @@ def download():
             print(f"Error regenerating spreadsheet: {e}")
             import traceback
             traceback.print_exc()
-            return f"<html><body><h2>Error al generar planilla</h2><p>{e}</p><a href='/'>Volver</a></body></html>", 500
+            import html as html_mod
+            return f"<html><body><h2>Error al generar planilla</h2><p>{html_mod.escape(str(e))}</p><a href='/'>Volver</a></body></html>", 500
 
     return "<html><body><h2>No se ha generado la planilla aún</h2><p>Primero acepta productos y presiona Finalizar.</p><a href='/'>Volver al inicio</a></body></html>", 404
 
