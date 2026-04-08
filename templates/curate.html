@@ -239,6 +239,7 @@
                     if (!data.done && data.products) {
                         // Add products we don't already have
                         const existingUrls = new Set(productQueue.map(p => p.product_url));
+                        existingUrls.add(product.product_url); // Exclude current product
                         for (const p of data.products) {
                             if (!existingUrls.has(p.product_url)) {
                                 productQueue.push(p);
