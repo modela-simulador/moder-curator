@@ -202,14 +202,20 @@ def load_session():
 
 def save_session(session):
     # Guardar en archivo local
-    tmp_path = SESSION_FILE + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(session, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, SESSION_FILE)
-    # Guardar en Firestore (async-like, no bloquea si falla)
-    save_session_firestore(session)
+    try:
+        tmp_path = SESSION_FILE + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(session, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, SESSION_FILE)
+    except Exception as e:
+        print(f"⚠️ Error guardando session local: {e}")
+    # Guardar en Firestore (síncrono — garantiza persistencia entre redeploys)
+    try:
+        save_session_firestore(session)
+    except Exception as e:
+        print(f"⚠️ Error guardando session en Firestore: {e}")
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
@@ -1741,11 +1747,13 @@ def crawl():
     if not crawl_lock.acquire(blocking=False):
         return jsonify({"error": "Ya hay un crawl en progreso. Espera a que termine."}), 429
 
-    # Reset session at start of new crawl
+    # Reset curation index but PRESERVE accepted/rejected if user has data
     session = load_session()
     session["current_index"] = 0
-    session["accepted"] = []
-    session["rejected"] = []
+    # Only clear if explicitly requested (not by default — protects user data)
+    if request.json and request.json.get("clear_session"):
+        session["accepted"] = []
+        session["rejected"] = []
     save_session(session)
 
     # Use country-specific cache file
@@ -1828,18 +1836,27 @@ def curate():
     # Brand filter from query param
     brand_filter = request.args.get("brand", "")
 
-    # Get remaining products
+    # Only show products from ACTIVE brands (prevents ghost brands from old cache)
+    active_brands = load_active_brands(country)
+    active_brand_names = set(b["name"] for b in active_brands) if active_brands else set()
+
+    # Get remaining products — filtered by active brands
     remaining = []
     for p in products:
         url = p["product_url"].rstrip("/")
+        # Skip products from brands not in active list
+        if active_brand_names and p.get("brand", "") not in active_brand_names:
+            continue
         if url not in previous_urls and url not in processed_urls:
             if not brand_filter or p.get("brand", "") == brand_filter:
                 remaining.append(p)
 
-    # Get all unique brands from remaining (unfiltered) for the filter UI
+    # Get all unique brands from remaining (unfiltered by brand_filter) for the filter UI
     all_remaining = []
     for p in products:
         url = p["product_url"].rstrip("/")
+        if active_brand_names and p.get("brand", "") not in active_brand_names:
+            continue
         if url not in previous_urls and url not in processed_urls:
             all_remaining.append(p)
 
@@ -1870,6 +1887,66 @@ def curate():
                            rejected_count=len(session.get("rejected", [])),
                            available_brands=sorted_brands,
                            current_brand_filter=brand_filter)
+
+
+@app.route("/curate/next")
+def curate_next():
+    """AJAX endpoint — returns next product as JSON without full page reload"""
+    country = load_active_country()
+    session = load_session()
+    cache_path = get_cache_file_for_country(country)
+    products = None
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path) as f:
+                products = json.load(f).get("products", [])
+        except:
+            pass
+    if not products:
+        return jsonify({"done": True, "accepted": len(session.get("accepted", []))})
+
+    previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
+    processed_urls = set()
+    for p in session.get("accepted", []):
+        processed_urls.add(p.get("product_url", "").rstrip("/"))
+    for url in session.get("rejected", []):
+        processed_urls.add(url.rstrip("/"))
+
+    active_brands = load_active_brands(country)
+    active_brand_names = set(b["name"] for b in active_brands) if active_brands else set()
+    brand_filter = request.args.get("brand", "")
+
+    remaining = []
+    all_remaining = []
+    for p in products:
+        url = p["product_url"].rstrip("/")
+        if active_brand_names and p.get("brand", "") not in active_brand_names:
+            continue
+        if url not in previous_urls and url not in processed_urls:
+            all_remaining.append(p)
+            if not brand_filter or p.get("brand", "") == brand_filter:
+                remaining.append(p)
+
+    available_brands = {}
+    for p in all_remaining:
+        b = p.get("brand", "Desconocida")
+        available_brands[b] = available_brands.get(b, 0) + 1
+
+    if not remaining:
+        return jsonify({"done": True, "accepted": len(session.get("accepted", [])),
+                        "total": len(products)})
+
+    current = remaining[0]
+    return jsonify({
+        "done": False,
+        "product": current,
+        "remaining": len(remaining),
+        "total": len(products),
+        "progress": len(products) - len(all_remaining),
+        "accepted_count": len(session.get("accepted", [])),
+        "rejected_count": len(session.get("rejected", [])),
+        "brands": sorted(available_brands.items(), key=lambda x: -x[1])
+    })
 
 
 @app.route("/action", methods=["POST"])
@@ -1918,10 +1995,8 @@ def action():
             return jsonify({"status": "error", "error": str(e)}), 500
         total = len(previous_rows) + len(session["accepted"])
         accepted_count = len(session["accepted"])
-        # Reset session after generating spreadsheet
-        session["current_index"] = 0
-        session["accepted"] = []
-        session["rejected"] = []
+        # DO NOT clear session here — keep accepted until download completes
+        # Session will be cleared when user starts a new crawl or cancels
         save_session(session)
         return jsonify({"status": "done", "count": accepted_count,
                         "previous": len(previous_rows), "total": total, "path": output_path})

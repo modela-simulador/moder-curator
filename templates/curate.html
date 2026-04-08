@@ -149,7 +149,7 @@
             </div>
 
             {% if product.all_images | length > 1 %}
-            <div class="thumbs">
+            <div class="thumbs" id="thumbnails">
                 {% for img in product.all_images %}
                 <img class="thumb {% if loop.first %}active{% endif %}"
                      src="{{ img }}"
@@ -189,7 +189,7 @@
         </div>
 
         <div class="remaining">
-            {{ remaining }} productos restantes
+            <span id="remainingCount">{{ remaining }}</span> productos restantes
         </div>
     </div>
 
@@ -276,9 +276,10 @@
                 return;
             }
 
-            // Animate
+            // Animate card
             card.classList.add(action === 'accept' ? 'slide-right' : 'slide-left');
 
+            // Send action + fetch next product WITHOUT page reload (fast)
             fetch('/action', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -288,9 +289,63 @@
             .then(() => {
                 if (action === 'accept') accepted++;
                 else rejected++;
-                // Navigate to next (preserve brand filter)
-                setTimeout(() => { window.location.href = curateUrl; }, 200);
-            });
+                // Fetch next product via AJAX — no page reload
+                const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
+                return fetch('/curate/next' + qs);
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.done) { window.location.href = '/curate'; return; }
+                const p = data.product;
+                setTimeout(() => {
+                    card.classList.remove('slide-right', 'slide-left');
+                    // Update image
+                    const mainImg = document.getElementById('mainImage');
+                    if (mainImg) mainImg.src = (p.images && p.images[0]) || '';
+                    // Update text fields
+                    const nameEl = document.querySelector('.product-name');
+                    if (nameEl) nameEl.textContent = p.name || '';
+                    const brandEl = document.querySelector('.product-brand');
+                    if (brandEl) brandEl.textContent = p.brand || '';
+                    const descEl = document.querySelector('.product-description');
+                    if (descEl) descEl.textContent = (p.description || '').substring(0, 200);
+                    const priceEl = document.querySelector('.product-price');
+                    if (priceEl) priceEl.textContent = p.price || '';
+                    // Update link
+                    const linkEl = document.querySelector('a.product-link');
+                    if (linkEl) linkEl.href = p.product_url || '';
+                    // Update counters
+                    const accEl = document.getElementById('acceptedCount');
+                    if (accEl) accEl.textContent = data.accepted_count;
+                    const rejEl = document.getElementById('rejectedCount');
+                    if (rejEl) rejEl.textContent = data.rejected_count;
+                    const remEl = document.getElementById('remainingCount');
+                    if (remEl) remEl.textContent = data.remaining;
+                    // Update progress bar
+                    const progBar = document.getElementById('progressFill');
+                    if (progBar) progBar.style.width = ((data.progress / data.total) * 100) + '%';
+                    // Update product reference for next action
+                    product = p;
+                    // Update thumbnails using safe DOM methods
+                    const thumbs = document.getElementById('thumbnails');
+                    if (thumbs && p.images) {
+                        while (thumbs.firstChild) thumbs.removeChild(thumbs.firstChild);
+                        p.images.slice(0, 5).forEach((imgUrl, i) => {
+                            const img = document.createElement('img');
+                            img.src = imgUrl;
+                            img.className = 'thumb' + (i === 0 ? ' active' : '');
+                            img.addEventListener('click', () => {
+                                document.getElementById('mainImage').src = imgUrl;
+                                thumbs.querySelectorAll('.thumb').forEach(t => t.classList.remove('active'));
+                                img.classList.add('active');
+                            });
+                            img.onerror = () => { img.style.display = 'none'; };
+                            thumbs.appendChild(img);
+                        });
+                    }
+                }, 150);
+            })
+            .catch(err => console.error('Error loading next:', err));
         }
 
         // Keyboard shortcuts
