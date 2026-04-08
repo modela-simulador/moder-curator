@@ -213,6 +213,11 @@
                 ■ Terminar aquí y generar planilla
             </button>
         </div>
+        <div class="action-row" style="margin-top: 6px;">
+            <button class="btn" onclick="cancelAndReset()" style="background:transparent; color:#c62828; font-size:12px; border:1px solid #eee;">
+                ✕ Cancelar curación y volver al inicio
+            </button>
+        </div>
     </div>
 
     <script>
@@ -405,33 +410,38 @@
             };
 
             if (nextProduct) {
-                // INSTANT — product from local queue, no server wait
+                // INSTANT — product already in local queue
                 setTimeout(() => showNext(nextProduct, null), 160);
             } else {
-                // Fallback — fetch from server
+                // Must wait for action to save FIRST, then fetch next from server
                 const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
-                fetch('/curate/next' + qs).then(r => r.json()).then(data => {
-                    if (data.done) { pendingAction.then(() => { window.location.href = '/curate'; }); return; }
-                    const p = data.products ? data.products[0] : data.product;
-                    // Add remaining products to queue
-                    if (data.products) {
-                        data.products.slice(1).forEach(pp => {
-                            if (!productQueue.find(q => q.product_url === pp.product_url)) {
-                                productQueue.push(pp);
-                                if (pp.image_url) { const img = new Image(); img.src = pp.image_url; }
-                            }
-                        });
-                    }
-                    setTimeout(() => showNext(p, data), 160);
-                }).catch(err => {
-                    console.error('Error:', err);
-                    (pendingAction || Promise.resolve()).finally(() => {
+                pendingAction.then(() => fetch('/curate/next' + qs))
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.done) { window.location.href = '/curate'; return; }
+                        const p = data.products ? data.products[0] : data.product;
+                        if (data.products) {
+                            data.products.slice(1).forEach(pp => {
+                                if (!productQueue.find(q => q.product_url === pp.product_url)) {
+                                    productQueue.push(pp);
+                                    if (pp.image_url) { const img = new Image(); img.src = pp.image_url; }
+                                }
+                            });
+                        }
+                        setTimeout(() => showNext(p, data), 160);
+                    }).catch(err => {
+                        console.error('Error:', err);
                         card.dataset.busy = 'false';
                         card.classList.remove('slide-right', 'slide-left');
                         window.location.href = curateUrl;
                     });
-                });
             }
+        }
+
+        function cancelAndReset() {
+            if (!confirm('¿Cancelar curación? Se perderán todos los productos aceptados y rechazados.')) return;
+            fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                .then(() => { window.location.href = '/'; });
         }
 
         // Keyboard shortcuts

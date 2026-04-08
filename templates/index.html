@@ -155,7 +155,7 @@
                 <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px;">Marcas activas</div>
                 {% if active_brands %}
                 <button class="btn btn-small" onclick="removeAllBrands()" style="font-size: 11px; padding: 5px 12px; background: #fce4ec; color: #c62828; border: none;">Quitar todas</button>
-                <button class="btn btn-small" onclick="cancelCuration()" style="font-size: 11px; padding: 5px 12px; background: #fff3e0; color: #e65100; border: none; margin-left: 4px;">Cancelar Curación</button>
+                <button class="btn btn-small" onclick="resetAll()" style="font-size: 11px; padding: 5px 12px; background: #ffebee; color: #b71c1c; border: none; margin-left: 4px;">Resetear todo</button>
                 {% endif %}
             </div>
             <div class="brand-list" id="activeBrands">
@@ -310,13 +310,22 @@
 
         function removeAllBrands() {
             if (!confirm('¿Quitar todas las marcas activas? Esto también limpiará la curación actual.')) return;
-            fetch('/remove-all-brands', { method: 'POST' })
+            fetch('/remove-all-brands', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
                 .then(() => location.reload());
+        }
+
+        function resetAll() {
+            if (!confirm('¿RESETEAR TODO? Se eliminarán marcas, productos, sesión y cache. El robot quedará limpio.')) return;
+            fetch('/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                .then(() => {
+                    fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                        .finally(() => location.reload());
+                });
         }
 
         function cancelCuration() {
             if (!confirm('¿Cancelar la curación actual? Se eliminará la sesión, el cache de productos y cualquier crawl en progreso.')) return;
-            fetch('/cancel-curation', { method: 'POST' })
+            fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
                 .then(r => r.json())
                 .then(data => {
                     alert(data.message || 'Curación cancelada');
