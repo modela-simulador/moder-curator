@@ -10,6 +10,14 @@ import io
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
+from firestore_storage import (
+    save_session_firestore, load_session_firestore,
+    save_brands_firestore, load_brands_firestore,
+    save_country_firestore, load_country_firestore,
+    save_cache_firestore, load_cache_firestore,
+    clear_session_firestore, clear_cache_firestore, clear_all_firestore,
+    is_firestore_available
+)
 import threading
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
@@ -99,6 +107,11 @@ SUGGESTED_BRANDS = SUGGESTED_BRANDS_BY_COUNTRY.get("CL", [])
 COUNTRY_FILE = os.path.join(DATA_DIR, "active_country.json")
 
 def load_active_country():
+    # Firestore primero
+    fs = load_country_firestore()
+    if fs is not None:
+        return fs
+    # Fallback archivo
     if os.path.exists(COUNTRY_FILE):
         try:
             with open(COUNTRY_FILE) as f:
@@ -115,6 +128,7 @@ def save_active_country(country_code):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, COUNTRY_FILE)
+    save_country_firestore(country_code)
 
 def get_brands_file_for_country(country_code):
     """Each country gets its own active brands file"""
@@ -132,6 +146,12 @@ BRANDS_FILE = os.path.join(DATA_DIR, "active_brands.json")
 
 def load_active_brands(country_code=None):
     """Load active brands for a specific country (or legacy global file)"""
+    # Firestore primero
+    if country_code:
+        fs = load_brands_firestore(country_code)
+        if fs is not None:
+            return fs
+    # Fallback archivo
     if country_code:
         path = get_brands_file_for_country(country_code)
     else:
@@ -143,6 +163,7 @@ def load_active_brands(country_code=None):
 
 def save_active_brands(brands, country_code=None):
     """Save active brands for a specific country (or legacy global file)"""
+    # Archivo local
     if country_code:
         path = get_brands_file_for_country(country_code)
     else:
@@ -153,6 +174,9 @@ def save_active_brands(brands, country_code=None):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, path)
+    # Firestore
+    if country_code:
+        save_brands_firestore(brands, country_code)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -161,6 +185,11 @@ HEADERS = {
 # ─── Session state ───────────────────────────────────────────────────────
 
 def load_session():
+    # Intentar Firestore primero
+    fs_data = load_session_firestore()
+    if fs_data:
+        return fs_data
+    # Fallback a archivo local
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE) as f:
@@ -172,12 +201,15 @@ def load_session():
     return {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
 
 def save_session(session):
+    # Guardar en archivo local
     tmp_path = SESSION_FILE + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(session, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, SESSION_FILE)
+    # Guardar en Firestore (async-like, no bloquea si falla)
+    save_session_firestore(session)
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
@@ -1337,6 +1369,10 @@ def crawl_all(brands=None, cache_file=None):
         os.fsync(f.fileno())
     os.replace(tmp_path, cache_file)
     print(f"Cache saved: {len(all_products)} products → {cache_file}")
+    # También guardar en Firestore para persistencia
+    country = load_active_country()
+    if country:
+        save_cache_firestore(all_products, country)
 
     crawl_progress["status"] = "done"
     crawl_progress["done"] = True
@@ -1570,7 +1606,7 @@ def index():
                                suggested_brands=[], default_brands=[],
                                active_country="", country_info={})
     session = load_session()
-    # Load country-specific cache and brands
+    # Load country-specific cache (Firestore → local file fallback)
     cache_path = get_cache_file_for_country(country)
     products = None
     if os.path.exists(cache_path):
@@ -1580,6 +1616,11 @@ def index():
                 products = data.get("products", [])
         except (json.JSONDecodeError, IOError):
             pass
+    # Fallback a Firestore si archivo local no existe
+    if not products:
+        fs_products = load_cache_firestore(country)
+        if fs_products:
+            products = fs_products
     active_brands = load_active_brands(country)
     has_cache = products is not None and len(products) > 0
     all_suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
@@ -1956,19 +1997,21 @@ def cancel_curation():
 
 
 def clear_curation_session(country=None):
-    """Clear all curation data — session, cache, crawl state"""
+    """Clear all curation data — session, cache, crawl state (local + Firestore)"""
     global crawl_progress
-    # Clear session file
+    # Clear local files
     if os.path.exists(SESSION_FILE):
         os.remove(SESSION_FILE)
-    # Clear cache for this country
     if country:
         cache = get_cache_file_for_country(country)
         if os.path.exists(cache):
             os.remove(cache)
-    # Clear general cache
     if os.path.exists(CRAWL_CACHE):
         os.remove(CRAWL_CACHE)
+    # Clear Firestore
+    clear_session_firestore()
+    if country:
+        clear_cache_firestore(country)
     # Reset progress
     crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                       "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
