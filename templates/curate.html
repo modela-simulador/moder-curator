@@ -61,10 +61,11 @@
         /* Keyboard hints */
         .kbd { display: inline-block; background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; margin-left: 4px; }
 
-        /* Slide animation */
-        .product-card { transition: transform 0.3s, opacity 0.3s; }
-        .slide-left { transform: translateX(-120%); opacity: 0; }
-        .slide-right { transform: translateX(120%); opacity: 0; }
+        /* Slide animation — fast */
+        .product-card { transition: transform 0.15s ease-out, opacity 0.15s ease-out; }
+        .slide-left { transform: translateX(-100%); opacity: 0; }
+        .slide-right { transform: translateX(100%); opacity: 0; }
+        .slide-in { transform: translateX(0); opacity: 1; }
 
         /* Brand filter bar */
         .brand-filter { position: fixed; top: 53px; left: 0; right: 0; background: white; z-index: 99; padding: 8px 16px; border-bottom: 1px solid #eee; display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -276,37 +277,39 @@
                 return;
             }
 
-            // Animate card
+            // Debounce
+            if (card.dataset.busy === 'true') return;
+            card.dataset.busy = 'true';
+
+            // Animate out (fast 150ms)
             card.classList.add(action === 'accept' ? 'slide-right' : 'slide-left');
 
-            // Debounce — prevent double-click
-            const btns = card.querySelectorAll('button');
-            btns.forEach(b => b.disabled = true);
-
-            // Send action + fetch next product WITHOUT page reload (fast)
-            fetch('/action', {
+            // Fire BOTH requests in PARALLEL — don't wait for action to complete before fetching next
+            const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
+            const actionPromise = fetch('/action', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, product: product })
-            })
-            .then(r => r.json())
-            .then(() => {
-                if (action === 'accept') accepted++;
-                else rejected++;
-                const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
-                return fetch('/curate/next' + qs);
-            })
-            .then(r => r.json())
-            .then(data => {
+            });
+            const nextPromise = fetch('/curate/next' + qs).then(r => r.json());
+
+            if (action === 'accept') accepted++;
+            else rejected++;
+
+            // Wait for next product (action saves in background)
+            nextPromise.then(data => {
                 if (data.done) { window.location.href = '/curate'; return; }
                 const p = data.product;
+
+                // Wait for slide-out animation to finish (150ms), then swap content instantly
                 setTimeout(() => {
+                    // Hide card, swap content, show card
+                    card.style.transition = 'none';
                     card.classList.remove('slide-right', 'slide-left');
-                    btns.forEach(b => b.disabled = false);
-                    // Main image (field: image_url or all_images[0])
+
+                    // Update all fields
                     const mainImg = document.getElementById('mainImage');
                     if (mainImg) mainImg.src = p.image_url || (p.all_images && p.all_images[0]) || '';
-                    // Text fields
                     const nameEl = document.querySelector('.product-name');
                     if (nameEl) nameEl.textContent = p.name || '';
                     const brandEl = document.querySelector('.product-brand');
@@ -319,22 +322,19 @@
                     if (priceEl) priceEl.textContent = p.price ? '$' + String(p.price).replace('.00','') : '';
                     const catEl = document.querySelector('.product-category');
                     if (catEl) catEl.textContent = p.category || '';
-                    // Link
                     const linkEl = document.querySelector('a.product-link');
                     if (linkEl) { linkEl.href = p.product_url || ''; linkEl.textContent = 'Ver en ' + (p.brand || 'tienda') + ' ↗'; }
-                    // Counters (with emoji prefix)
                     const accEl = document.getElementById('acceptedCount');
                     if (accEl) accEl.textContent = '✓ ' + data.accepted_count;
                     const rejEl = document.getElementById('rejectedCount');
                     if (rejEl) rejEl.textContent = '✗ ' + data.rejected_count;
                     const remEl = document.getElementById('remainingCount');
                     if (remEl) remEl.textContent = data.remaining;
-                    // Progress bar
                     const progBar = document.getElementById('progressFill');
                     if (progBar) progBar.style.width = ((data.progress / data.total) * 100) + '%';
-                    // Update product reference (let, not const)
                     product = p;
-                    // Thumbnails (field: all_images)
+
+                    // Thumbnails
                     const thumbs = document.getElementById('thumbnails');
                     if (thumbs && p.all_images && p.all_images.length > 1) {
                         while (thumbs.firstChild) thumbs.removeChild(thumbs.firstChild);
@@ -351,18 +351,23 @@
                             thumbs.appendChild(img);
                         });
                         thumbs.style.display = '';
-                    } else if (thumbs) {
-                        thumbs.style.display = 'none';
-                    }
-                    // Skip brand button
+                    } else if (thumbs) { thumbs.style.display = 'none'; }
+
                     const skipBtn = document.getElementById('skipBrandBtn');
                     if (skipBtn) skipBtn.textContent = '⏭ Saltar marca (' + (p.brand || 'marca') + ')';
-                }, 150);
+
+                    // Re-enable transitions and unlock
+                    requestAnimationFrame(() => {
+                        card.style.transition = '';
+                        card.dataset.busy = 'false';
+                    });
+                }, 160);
             })
             .catch(err => {
-                console.error('Error loading next:', err);
-                btns.forEach(b => b.disabled = false);
-                window.location.href = curateUrl; // Fallback a page reload
+                console.error('Error:', err);
+                card.dataset.busy = 'false';
+                card.classList.remove('slide-right', 'slide-left');
+                window.location.href = curateUrl;
             });
         }
 
