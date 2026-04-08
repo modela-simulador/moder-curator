@@ -182,7 +182,8 @@
             <div class="brand-suggestions" id="suggestedList">
                 {% for brand in suggested_brands %}
                 <div class="brand-suggestion" id="sug_{{ brand.domain | replace('.', '_') | replace('/', '_') }}"
-                     onclick="addSuggested('{{ brand.name }}', '{{ brand.domain }}', '{{ brand.url }}', this)">
+                     data-name="{{ brand.name }}" data-domain="{{ brand.domain }}" data-url="{{ brand.url }}"
+                     onclick="addSuggested(this.dataset.name, this.dataset.domain, this.dataset.url, this)">
                     <div>
                         <strong>{{ brand.name }}</strong>
                         <span class="domain">{{ brand.domain }}</span>
@@ -190,6 +191,11 @@
                     <span class="add-btn">+ Agregar</span>
                 </div>
                 {% endfor %}
+            </div>
+            <div style="text-align: center; padding: 12px;">
+                <button class="btn btn-primary" onclick="location.reload()" style="padding: 10px 24px; font-size: 13px;">
+                    🔄 Actualizar lista de marcas
+                </button>
             </div>
             {% else %}
             <div style="text-align: center; padding: 16px; font-size: 13px; color: #aaa;">
@@ -277,27 +283,34 @@
         }
 
         function addAllSuggested() {
-            fetch('/add-all-suggested', { method: 'POST' })
+            fetch('/add-all-suggested', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
                 .then(r => r.json())
-                .then(data => {
-                    location.reload();
-                });
+                .then(() => location.reload())
+                .catch(err => { console.error('Error:', err); alert('Error al agregar marcas'); });
         }
 
         function addSuggested(name, domain, url, el) {
             if (el.classList.contains('added')) return;
+            el.style.opacity = '0.5';
             fetch('/add-brand', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, url })
+                body: JSON.stringify({ name: name, url: url })
             })
-            .then(r => r.json())
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(data => {
-                if (data.error) { alert(data.error); return; }
+                if (data.error) { alert(data.error); el.style.opacity = '1'; return; }
                 el.classList.add('added');
-                el.querySelector('.add-btn').textContent = '✓ Agregada';
-                location.reload();
-            });
+                el.style.opacity = '1';
+                el.style.background = '#e8f5e9';
+                const addBtn = el.querySelector('.add-btn');
+                if (addBtn) addBtn.textContent = '✓';
+                // Don't reload immediately — let user add more brands
+            })
+            .catch(err => { console.error('Error adding brand:', err); el.style.opacity = '1'; alert('Error: ' + err.message); });
         }
 
         function removeBrand(domain) {
