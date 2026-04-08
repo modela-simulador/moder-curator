@@ -278,21 +278,18 @@ def load_cache_firestore(country):
 # ── Clear ────────────────────────────────────────────────────────────────
 
 def clear_session_firestore(user_id="default"):
-    """Limpia sesión de curación — todos los documentos session_*."""
+    """Limpia sesión de curación — batch delete para velocidad."""
     db = _get_db()
     if not db:
         return False
     try:
-        db.collection("curator").document(f"session_{user_id}").delete()
-        # Limpiar TODOS los chunks dinámicamente per user
+        # Batch delete — much faster than individual deletes (1 round-trip vs 50+)
+        batch = db.batch()
+        batch.delete(db.collection("curator").document(f"session_{user_id}"))
         for prefix in [f"{user_id}_accepted_", f"{user_id}_rejected_", f"{user_id}_rows_"]:
-            # Don't break on gaps — iterate all possible indices
-            for i in range(50):
-                try:
-                    doc = db.collection("curator").document(f"{prefix}{i}")
-                    doc.delete()
-                except Exception:
-                    pass
+            for i in range(15):  # Max 15 chunks per type (covers 1500 accepted, 7500 rejected)
+                batch.delete(db.collection("curator").document(f"{prefix}{i}"))
+        batch.commit()  # Single round-trip to Firestore
         return True
     except Exception as e:
         print(f"Error clearing session Firestore: {e}")
@@ -300,17 +297,21 @@ def clear_session_firestore(user_id="default"):
 
 
 def clear_cache_firestore(country):
-    """Limpia cache de un país."""
+    """Limpia cache de un país — batch delete."""
     db = _get_db()
     if not db:
         return False
     try:
         doc_ref = db.collection("curator").document(f"cache_{country}")
-        # Limpiar chunks
-        chunks = doc_ref.collection("chunks").stream()
-        for chunk in chunks:
-            chunk.reference.delete()
-        doc_ref.delete()
+        chunks = list(doc_ref.collection("chunks").stream())
+        if chunks:
+            batch = db.batch()
+            for chunk in chunks:
+                batch.delete(chunk.reference)
+            batch.delete(doc_ref)
+            batch.commit()
+        else:
+            doc_ref.delete()
         return True
     except Exception as e:
         return False

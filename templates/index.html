@@ -309,28 +309,30 @@
         }
 
         function removeAllBrands() {
-            if (!confirm('¿Quitar todas las marcas activas? Esto también limpiará la curación actual.')) return;
+            if (!confirm('¿Quitar todas las marcas activas?')) return;
+            document.body.style.opacity = '0.5';
+            document.body.style.pointerEvents = 'none';
             fetch('/remove-all-brands', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                .then(() => location.reload());
+                .finally(() => location.reload());
         }
 
         function resetAll() {
-            if (!confirm('¿RESETEAR TODO? Se eliminarán marcas, productos, sesión y cache. El robot quedará limpio.')) return;
-            fetch('/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                .then(() => {
-                    fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                        .finally(() => location.reload());
-                });
+            if (!confirm('¿RESETEAR TODO? El robot quedará limpio.')) return;
+            document.body.style.opacity = '0.5';
+            document.body.style.pointerEvents = 'none';
+            // Fire both in parallel — don't wait for one before the other
+            Promise.all([
+                fetch('/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }),
+                fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+            ]).finally(() => location.reload());
         }
 
         function cancelCuration() {
-            if (!confirm('¿Cancelar la curación actual? Se eliminará la sesión, el cache de productos y cualquier crawl en progreso.')) return;
+            if (!confirm('¿Cancelar la curación actual?')) return;
+            document.body.style.opacity = '0.5';
+            document.body.style.pointerEvents = 'none';
             fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                .then(r => r.json())
-                .then(data => {
-                    alert(data.message || 'Curación cancelada');
-                    location.reload();
-                });
+                .finally(() => location.reload());
         }
 
         function startCrawl() {
