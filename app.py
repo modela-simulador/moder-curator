@@ -29,7 +29,9 @@ app.secret_key = os.environ.get("SECRET_KEY", "moder-curator-2026-secret")
 
 # ─── Auth ────────────────────────────────────────────────────────────────
 USERS = {
-    "demo": "demo",
+    "sebastian": "moder2026",
+    "antonia": "moder2026",
+    "sofia": "moder2026",
 }
 
 from functools import wraps
@@ -42,6 +44,10 @@ def login_required(f):
             return redirect(url_for("login_page"))
         return f(*args, **kwargs)
     return decorated
+
+def get_user_id():
+    """Get current user ID from Flask session — used to isolate curation sessions"""
+    return flask_session.get("username", "default")
 
 # ─── Config ──────────────────────────────────────────────────────────────
 # Persistent disk on Render (survives redeploys), fallback to local dir
@@ -184,36 +190,57 @@ HEADERS = {
 
 # ─── Session state ───────────────────────────────────────────────────────
 
-def load_session():
-    # Intentar Firestore primero
-    fs_data = load_session_firestore()
+def _session_file_for_user(user_id=None):
+    """Get session file path for a specific user"""
+    uid = user_id or get_user_id()
+    return os.path.join(DATA_DIR, f"session_{uid}.json")
+
+def load_session(user_id=None):
+    uid = user_id or get_user_id()
+    # Intentar Firestore primero (con user prefix)
+    fs_data = load_session_firestore(uid)
     if fs_data:
         return fs_data
-    # Fallback a archivo local
-    if os.path.exists(SESSION_FILE):
+    # Fallback a archivo local (per-user)
+    path = _session_file_for_user(uid)
+    if os.path.exists(path):
         try:
-            with open(SESSION_FILE) as f:
+            with open(path) as f:
                 content = f.read().strip()
                 if content:
                     return json.loads(content)
         except (json.JSONDecodeError, IOError):
             pass
+    # Legacy fallback (migrar si existe)
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE) as f:
+                content = f.read().strip()
+                if content:
+                    data = json.loads(content)
+                    # Migrar al nuevo formato per-user
+                    save_session(data, uid)
+                    return data
+        except:
+            pass
     return {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
 
-def save_session(session):
-    # Guardar en archivo local
+def save_session(session, user_id=None):
+    uid = user_id or get_user_id()
+    # Guardar en archivo local per-user
     try:
-        tmp_path = SESSION_FILE + ".tmp"
+        path = _session_file_for_user(uid)
+        tmp_path = path + ".tmp"
         with open(tmp_path, "w") as f:
             json.dump(session, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, SESSION_FILE)
+        os.replace(tmp_path, path)
     except Exception as e:
         print(f"⚠️ Error guardando session local: {e}")
-    # Guardar en Firestore (síncrono — garantiza persistencia entre redeploys)
+    # Guardar en Firestore per-user
     try:
-        save_session_firestore(session)
+        save_session_firestore(session, uid)
     except Exception as e:
         print(f"⚠️ Error guardando session en Firestore: {e}")
 
@@ -1288,6 +1315,7 @@ def deduplicate_products(products):
 crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                   "products_found": 0, "current_brand": "", "done": False}
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
+crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
 last_generated_xlsx = None
@@ -1312,8 +1340,28 @@ def crawl_all(brands=None, cache_file=None):
         "failed_brands": []
     }
 
+    # Load previous cache to preserve data for brands that fail
+    prev_products_by_brand = {}
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file) as f:
+                prev = json.load(f).get("products", [])
+                for p in prev:
+                    b = p.get("brand", "")
+                    if b not in prev_products_by_brand:
+                        prev_products_by_brand[b] = []
+                    prev_products_by_brand[b].append(p)
+        except:
+            pass
+
     all_products = []
     for i, brand in enumerate(brands):
+        # Check cancel signal
+        if crawl_cancel_event.is_set():
+            crawl_progress["message"] = "Curación cancelada"
+            print("🛑 Crawl cancelled by user")
+            break
+
         crawl_progress["brand_idx"] = i + 1
         crawl_progress["current_brand"] = brand["name"]
         crawl_progress["message"] = f"Crawleando {brand['name']}... ({i+1}/{len(brands)})"
@@ -1326,9 +1374,16 @@ def crawl_all(brands=None, cache_file=None):
         products = crawl_brand(brand, progress_callback=progress_cb)
 
         if not products:
-            crawl_progress["message"] = f"⚠ {brand['name']}: sin acceso"
+            # PRESERVE previous data for this brand if crawl fails
+            prev = prev_products_by_brand.get(brand["name"], [])
+            if prev:
+                all_products.extend(prev)
+                crawl_progress["message"] = f"⚠ {brand['name']}: sin acceso (usando {len(prev)} del cache anterior)"
+                print(f"  → 0 new products, preserved {len(prev)} from previous cache")
+            else:
+                crawl_progress["message"] = f"⚠ {brand['name']}: sin acceso"
+                print(f"  → 0 products (failed)")
             crawl_progress["failed_brands"].append(brand["name"])
-            print(f"  → 0 products (failed)")
             time.sleep(2.0)
             continue
 
@@ -2063,21 +2118,26 @@ def cancel_curation():
     global crawl_progress
     country = load_active_country()
     clear_curation_session(country)
-    # Force-release crawl lock if stuck
-    if crawl_lock.locked():
-        try:
-            crawl_lock.release()
-        except RuntimeError:
-            pass
+    # Signal crawl thread to stop (if running)
+    crawl_cancel_event.set()
+    # Wait briefly for graceful stop
+    import time
+    time.sleep(1)
+    crawl_cancel_event.clear()
     crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                       "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
     return jsonify({"status": "ok", "message": "Curación cancelada. Sesión limpia."})
 
 
-def clear_curation_session(country=None):
+def clear_curation_session(country=None, user_id=None):
     """Clear all curation data — session, cache, crawl state (local + Firestore)"""
+    uid = user_id or get_user_id()
     global crawl_progress
-    # Clear local files
+    # Clear local per-user session file
+    user_session = _session_file_for_user(uid)
+    if os.path.exists(user_session):
+        os.remove(user_session)
+    # Also clean legacy session file
     if os.path.exists(SESSION_FILE):
         os.remove(SESSION_FILE)
     if country:
@@ -2087,7 +2147,7 @@ def clear_curation_session(country=None):
     if os.path.exists(CRAWL_CACHE):
         os.remove(CRAWL_CACHE)
     # Clear Firestore
-    clear_session_firestore()
+    clear_session_firestore(uid)
     if country:
         clear_cache_firestore(country)
     # Reset progress

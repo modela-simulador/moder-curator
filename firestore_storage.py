@@ -56,7 +56,7 @@ def _get_db():
 
 # ── Session ──────────────────────────────────────────────────────────────
 
-def save_session_firestore(session_data):
+def save_session_firestore(session_data, user_id="default"):
     """Guarda sesión de curación en Firestore."""
     db = _get_db()
     if not db:
@@ -72,23 +72,23 @@ def save_session_firestore(session_data):
             "previous_urls": session_data.get("previous_urls", [])[:1000],
             "updated_at": firestore_timestamp(),
         }
-        db.collection("curator").document("session").set(data)
+        db.collection("curator").document(f"session_{user_id}").set(data)
 
         # Guardar accepted en chunks (sin límite de 500)
         for i in range(0, max(len(accepted), 1), 100):
             chunk = accepted[i:i+100]
-            db.collection("curator").document(f"session_accepted_{i//100}").set({
+            db.collection("curator").document(f"{user_id}_accepted_{i//100}").set({
                 "products": chunk, "chunk_index": i//100,
             })
         # Limpiar chunks sobrantes de sesiones anteriores más largas
         for i in range((len(accepted)//100)+1, (len(accepted)//100)+10):
-            try: db.collection("curator").document(f"session_accepted_{i}").delete()
+            try: db.collection("curator").document(f"{user_id}_accepted_{i}").delete()
             except: pass
 
         # Guardar rejected en chunks
         for i in range(0, max(len(rejected), 1), 500):
             chunk = rejected[i:i+500]
-            db.collection("curator").document(f"session_rejected_{i//500}").set({
+            db.collection("curator").document(f"{user_id}_rejected_{i//500}").set({
                 "urls": chunk, "chunk_index": i//500,
             })
 
@@ -97,7 +97,7 @@ def save_session_firestore(session_data):
         if prev_rows:
             for i in range(0, len(prev_rows), 200):
                 chunk = prev_rows[i:i+200]
-                db.collection("curator").document(f"session_rows_{i//200}").set({
+                db.collection("curator").document(f"{user_id}_rows_{i//200}").set({
                     "rows": chunk, "chunk_index": i//200,
                 })
         return True
@@ -106,13 +106,13 @@ def save_session_firestore(session_data):
         return False
 
 
-def load_session_firestore():
+def load_session_firestore(user_id="default"):
     """Carga sesión de curación desde Firestore."""
     db = _get_db()
     if not db:
         return None
     try:
-        doc = db.collection("curator").document("session").get()
+        doc = db.collection("curator").document(f"session_{user_id}").get()
         if not doc.exists:
             return None
         data = doc.to_dict()
@@ -121,7 +121,7 @@ def load_session_firestore():
         accepted = []
         chunk_idx = 0
         while True:
-            chunk_doc = db.collection("curator").document(f"session_accepted_{chunk_idx}").get()
+            chunk_doc = db.collection("curator").document(f"{user_id}_accepted_{chunk_idx}").get()
             if not chunk_doc.exists:
                 break
             accepted.extend(chunk_doc.to_dict().get("products", []))
@@ -132,7 +132,7 @@ def load_session_firestore():
         rejected = []
         chunk_idx = 0
         while True:
-            chunk_doc = db.collection("curator").document(f"session_rejected_{chunk_idx}").get()
+            chunk_doc = db.collection("curator").document(f"{user_id}_rejected_{chunk_idx}").get()
             if not chunk_doc.exists:
                 break
             rejected.extend(chunk_doc.to_dict().get("urls", []))
@@ -143,7 +143,7 @@ def load_session_firestore():
         prev_rows = []
         chunk_idx = 0
         while True:
-            chunk_doc = db.collection("curator").document(f"session_rows_{chunk_idx}").get()
+            chunk_doc = db.collection("curator").document(f"{user_id}_rows_{chunk_idx}").get()
             if not chunk_doc.exists:
                 break
             prev_rows.extend(chunk_doc.to_dict().get("rows", []))
@@ -271,17 +271,17 @@ def load_cache_firestore(country):
 
 # ── Clear ────────────────────────────────────────────────────────────────
 
-def clear_session_firestore():
+def clear_session_firestore(user_id="default"):
     """Limpia sesión de curación — todos los documentos session_*."""
     db = _get_db()
     if not db:
         return False
     try:
-        db.collection("curator").document("session").delete()
-        # Limpiar TODOS los chunks dinámicamente (no hardcoded a 20)
-        for prefix in ["session_accepted_", "session_rejected_", "session_rows_"]:
+        db.collection("curator").document(f"session_{user_id}").delete()
+        # Limpiar TODOS los chunks dinámicamente per user
+        for prefix in [f"{user_id}_accepted_", f"{user_id}_rejected_", f"{user_id}_rows_"]:
             i = 0
-            while i < 100:  # Safety limit
+            while i < 100:
                 doc = db.collection("curator").document(f"{prefix}{i}").get()
                 if not doc.exists:
                     break
