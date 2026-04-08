@@ -215,7 +215,7 @@
     </div>
 
     <script>
-        const product = {{ product | tojson }};
+        let product = {{ product | tojson }};
         let accepted = {{ accepted_count }};
         let rejected = {{ rejected_count }};
         const brandFilter = '{{ current_brand_filter | default("") }}';
@@ -279,6 +279,10 @@
             // Animate card
             card.classList.add(action === 'accept' ? 'slide-right' : 'slide-left');
 
+            // Debounce — prevent double-click
+            const btns = card.querySelectorAll('button');
+            btns.forEach(b => b.disabled = true);
+
             // Send action + fetch next product WITHOUT page reload (fast)
             fetch('/action', {
                 method: 'POST',
@@ -289,7 +293,6 @@
             .then(() => {
                 if (action === 'accept') accepted++;
                 else rejected++;
-                // Fetch next product via AJAX — no page reload
                 const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
                 return fetch('/curate/next' + qs);
             })
@@ -299,38 +302,43 @@
                 const p = data.product;
                 setTimeout(() => {
                     card.classList.remove('slide-right', 'slide-left');
-                    // Update image
+                    btns.forEach(b => b.disabled = false);
+                    // Main image (field: image_url or all_images[0])
                     const mainImg = document.getElementById('mainImage');
-                    if (mainImg) mainImg.src = (p.images && p.images[0]) || '';
-                    // Update text fields
+                    if (mainImg) mainImg.src = p.image_url || (p.all_images && p.all_images[0]) || '';
+                    // Text fields
                     const nameEl = document.querySelector('.product-name');
                     if (nameEl) nameEl.textContent = p.name || '';
                     const brandEl = document.querySelector('.product-brand');
                     if (brandEl) brandEl.textContent = p.brand || '';
-                    const descEl = document.querySelector('.product-description');
+                    const badgeEl = document.querySelector('.product-badge');
+                    if (badgeEl) badgeEl.textContent = p.brand || '';
+                    const descEl = document.querySelector('.product-desc');
                     if (descEl) descEl.textContent = (p.description || '').substring(0, 200);
                     const priceEl = document.querySelector('.product-price');
-                    if (priceEl) priceEl.textContent = p.price || '';
-                    // Update link
+                    if (priceEl) priceEl.textContent = p.price ? '$' + String(p.price).replace('.00','') : '';
+                    const catEl = document.querySelector('.product-category');
+                    if (catEl) catEl.textContent = p.category || '';
+                    // Link
                     const linkEl = document.querySelector('a.product-link');
-                    if (linkEl) linkEl.href = p.product_url || '';
-                    // Update counters
+                    if (linkEl) { linkEl.href = p.product_url || ''; linkEl.textContent = 'Ver en ' + (p.brand || 'tienda') + ' ↗'; }
+                    // Counters (with emoji prefix)
                     const accEl = document.getElementById('acceptedCount');
-                    if (accEl) accEl.textContent = data.accepted_count;
+                    if (accEl) accEl.textContent = '✓ ' + data.accepted_count;
                     const rejEl = document.getElementById('rejectedCount');
-                    if (rejEl) rejEl.textContent = data.rejected_count;
+                    if (rejEl) rejEl.textContent = '✗ ' + data.rejected_count;
                     const remEl = document.getElementById('remainingCount');
                     if (remEl) remEl.textContent = data.remaining;
-                    // Update progress bar
+                    // Progress bar
                     const progBar = document.getElementById('progressFill');
                     if (progBar) progBar.style.width = ((data.progress / data.total) * 100) + '%';
-                    // Update product reference for next action
+                    // Update product reference (let, not const)
                     product = p;
-                    // Update thumbnails using safe DOM methods
+                    // Thumbnails (field: all_images)
                     const thumbs = document.getElementById('thumbnails');
-                    if (thumbs && p.images) {
+                    if (thumbs && p.all_images && p.all_images.length > 1) {
                         while (thumbs.firstChild) thumbs.removeChild(thumbs.firstChild);
-                        p.images.slice(0, 5).forEach((imgUrl, i) => {
+                        p.all_images.slice(0, 5).forEach((imgUrl, i) => {
                             const img = document.createElement('img');
                             img.src = imgUrl;
                             img.className = 'thumb' + (i === 0 ? ' active' : '');
@@ -342,10 +350,20 @@
                             img.onerror = () => { img.style.display = 'none'; };
                             thumbs.appendChild(img);
                         });
+                        thumbs.style.display = '';
+                    } else if (thumbs) {
+                        thumbs.style.display = 'none';
                     }
+                    // Skip brand button
+                    const skipBtn = document.querySelector('.skip-brand');
+                    if (skipBtn) skipBtn.textContent = 'Saltar ' + (p.brand || 'marca');
                 }, 150);
             })
-            .catch(err => console.error('Error loading next:', err));
+            .catch(err => {
+                console.error('Error loading next:', err);
+                btns.forEach(b => b.disabled = false);
+                window.location.href = curateUrl; // Fallback a page reload
+            });
         }
 
         // Keyboard shortcuts
