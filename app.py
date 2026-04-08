@@ -248,7 +248,7 @@ def fetch_with_retry(url, max_retries=3, base_delay=2.0):
             resp = requests.get(url, headers=HEADERS, timeout=45, allow_redirects=True)
             if resp.status_code == 200:
                 return resp
-            elif resp.status_code == 429 or resp.status_code == 503:
+            elif resp.status_code in (429, 500, 502, 503):
                 # Rate limited or overloaded — wait longer
                 wait = base_delay * (2 ** attempt) + 1
                 print(f"    ⏳ {resp.status_code} — retrying in {wait:.0f}s (attempt {attempt + 1}/{max_retries})")

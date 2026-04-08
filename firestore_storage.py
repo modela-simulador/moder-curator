@@ -75,22 +75,28 @@ def save_session_firestore(session_data, user_id="default"):
         db.collection("curator").document(f"session_{user_id}").set(data)
 
         # Guardar accepted en chunks (sin límite de 500)
+        num_acc_chunks = max((len(accepted) + 99) // 100, 1)
         for i in range(0, max(len(accepted), 1), 100):
             chunk = accepted[i:i+100]
             db.collection("curator").document(f"{user_id}_accepted_{i//100}").set({
                 "products": chunk, "chunk_index": i//100,
             })
-        # Limpiar chunks sobrantes de sesiones anteriores más largas
-        for i in range((len(accepted)//100)+1, (len(accepted)//100)+10):
+        # Limpiar chunks sobrantes (start from first unused chunk index)
+        for i in range(num_acc_chunks, num_acc_chunks + 15):
             try: db.collection("curator").document(f"{user_id}_accepted_{i}").delete()
-            except: pass
+            except Exception: pass
 
         # Guardar rejected en chunks
+        num_rej_chunks = max((len(rejected) + 499) // 500, 1)
         for i in range(0, max(len(rejected), 1), 500):
             chunk = rejected[i:i+500]
             db.collection("curator").document(f"{user_id}_rejected_{i//500}").set({
                 "urls": chunk, "chunk_index": i//500,
             })
+        # Cleanup orphaned rejected chunks
+        for i in range(num_rej_chunks, num_rej_chunks + 10):
+            try: db.collection("curator").document(f"{user_id}_rejected_{i}").delete()
+            except Exception: pass
 
         # Guardar previous_rows en chunks
         prev_rows = session_data.get("previous_rows", [])
@@ -280,13 +286,13 @@ def clear_session_firestore(user_id="default"):
         db.collection("curator").document(f"session_{user_id}").delete()
         # Limpiar TODOS los chunks dinámicamente per user
         for prefix in [f"{user_id}_accepted_", f"{user_id}_rejected_", f"{user_id}_rows_"]:
-            i = 0
-            while i < 100:
-                doc = db.collection("curator").document(f"{prefix}{i}").get()
-                if not doc.exists:
-                    break
-                doc.reference.delete()
-                i += 1
+            # Don't break on gaps — iterate all possible indices
+            for i in range(50):
+                try:
+                    doc = db.collection("curator").document(f"{prefix}{i}")
+                    doc.delete()
+                except Exception:
+                    pass
         return True
     except Exception as e:
         print(f"Error clearing session Firestore: {e}")
