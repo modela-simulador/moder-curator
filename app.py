@@ -1949,6 +1949,7 @@ def curate():
                                total=len(products))
 
     current = remaining[0]
+    current["_previous_count"] = len(session.get("previous_rows", []))
     progress = len(products) - len(all_remaining)
 
     return render_template("curate.html",
@@ -2011,6 +2012,7 @@ def curate_next():
                         "total": len(products)})
 
     current = remaining[0]
+    current["_previous_count"] = len(session.get("previous_rows", []))
     return jsonify({
         "done": False,
         "product": current,
