@@ -75,7 +75,7 @@ SUGGESTED_BRANDS_BY_COUNTRY = {
     "CL": [
         {"name": "CASSIOPEA", "domain": "cassiopeaofficial.com", "url": "https://shop.cassiopeaofficial.com"},
         {"name": "PARSOME", "domain": "parsome.cl", "url": "https://www.parsome.cl"},
-        {"name": "ARDE,", "domain": "wearearde.cl", "url": "https://wearearde.cl"},
+        {"name": "ARDE", "domain": "wearearde.cl", "url": "https://wearearde.cl"},
         {"name": "LA COT", "domain": "lacotmuet.cl", "url": "https://lacotmuet.cl", "platform": "woocommerce"},
         {"name": "D.GARCÍA", "domain": "degarcia.cl", "url": "https://www.degarcia.cl"},
         {"name": "ANTONIA FLUXÁ", "domain": "antoniafluxa.cl", "url": "https://www.antoniafluxa.cl"},
@@ -113,28 +113,12 @@ SUGGESTED_BRANDS = SUGGESTED_BRANDS_BY_COUNTRY.get("CL", [])
 COUNTRY_FILE = os.path.join(DATA_DIR, "active_country.json")
 
 def load_active_country():
-    # Firestore primero
-    fs = load_country_firestore()
-    if fs is not None:
-        return fs
-    # Fallback archivo
-    if os.path.exists(COUNTRY_FILE):
-        try:
-            with open(COUNTRY_FILE) as f:
-                data = json.load(f)
-                return data.get("country", "")
-        except (json.JSONDecodeError, IOError):
-            pass
-    return ""
+    """Per-user country from Flask session"""
+    return flask_session.get("active_country", "")
 
 def save_active_country(country_code):
-    tmp_path = COUNTRY_FILE + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump({"country": country_code}, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, COUNTRY_FILE)
-    save_country_firestore(country_code)
+    """Per-user country in Flask session"""
+    flask_session["active_country"] = country_code
 
 def get_brands_file_for_country(country_code):
     """Each country gets its own active brands file"""
@@ -150,39 +134,46 @@ def get_cache_file_for_country(country_code):
 
 BRANDS_FILE = os.path.join(DATA_DIR, "active_brands.json")
 
-def load_active_brands(country_code=None):
-    """Load active brands for a specific country (or legacy global file)"""
-    # Firestore primero
-    if country_code:
-        fs = load_brands_firestore(country_code)
-        if fs is not None:
-            return fs
-    # Fallback archivo
-    if country_code:
-        path = get_brands_file_for_country(country_code)
-    else:
-        path = BRANDS_FILE
+def _brands_file_for_user(country_code, user_id=None):
+    uid = user_id or get_user_id()
+    return os.path.join(DATA_DIR, f"brands_{uid}_{country_code}.json")
+
+def load_active_brands(country_code=None, user_id=None):
+    """Load active brands per user+country"""
+    uid = user_id or get_user_id()
+    cc = country_code or load_active_country()
+    if not cc:
+        return DEFAULT_BRANDS
+    # Firestore primero (per user+country)
+    fs = load_brands_firestore(f"{uid}_{cc}")
+    if fs is not None:
+        return fs
+    # Fallback archivo per user
+    path = _brands_file_for_user(cc, uid)
     if os.path.exists(path):
         with open(path) as f:
             return json.load(f)
+    # Legacy fallback (shared file)
+    legacy = get_brands_file_for_country(cc)
+    if os.path.exists(legacy):
+        with open(legacy) as f:
+            return json.load(f)
     return DEFAULT_BRANDS
 
-def save_active_brands(brands, country_code=None):
-    """Save active brands for a specific country (or legacy global file)"""
-    # Archivo local
-    if country_code:
-        path = get_brands_file_for_country(country_code)
-    else:
-        path = BRANDS_FILE
+def save_active_brands(brands, country_code=None, user_id=None):
+    """Save active brands per user+country"""
+    uid = user_id or get_user_id()
+    cc = country_code or load_active_country()
+    if not cc:
+        return
+    path = _brands_file_for_user(cc, uid)
     tmp_path = path + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(brands, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, path)
-    # Firestore
-    if country_code:
-        save_brands_firestore(brands, country_code)
+    save_brands_firestore(brands, f"{uid}_{cc}")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
@@ -1312,22 +1303,31 @@ def deduplicate_products(products):
 
 
 # Global progress state — simple dict, read by polling endpoint
-crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
-                  "products_found": 0, "current_brand": "", "done": False}
+_default_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
+                     "products_found": 0, "current_brand": "", "done": False, "failed_brands": []}
+crawl_progress_per_user = {}  # {user_id: progress_dict}
+
+def get_crawl_progress(uid=None):
+    uid = uid or "default"
+    if uid not in crawl_progress_per_user:
+        crawl_progress_per_user[uid] = dict(_default_progress)
+    return crawl_progress_per_user[uid]
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
 crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
-last_generated_xlsx = None
+generated_xlsx_per_user = {}  # {user_id: BytesIO buffer}
 
 
-def crawl_all(brands=None, cache_file=None):
+def crawl_all(brands=None, cache_file=None, progress=None):
     """Crawl all brands, deduplicate, and cache results.
 
     Uses a global dict for progress (read by polling endpoint).
     Saves partial cache after each brand for resilience.
     """
-    global crawl_progress
+    if progress is None:
+        progress = _default_progress.copy()
+    crawl_progress = progress  # Alias for backward compat
     if brands is None:
         brands = load_active_brands()
     if cache_file is None:
@@ -1813,19 +1813,21 @@ def crawl():
 
     # Use country-specific cache file
     cache_file = get_cache_file_for_country(country)
+    uid = get_user_id()
+    progress = get_crawl_progress(uid)
 
     def run_crawl():
         try:
-            print(f"🚀 Starting crawl for {len(active_brands)} brands in {country}...")
-            products = crawl_all(active_brands, cache_file=cache_file)
+            print(f"🚀 Starting crawl for {len(active_brands)} brands in {country} (user: {uid})...")
+            products = crawl_all(active_brands, cache_file=cache_file, progress=progress)
             print(f"✅ Crawl complete: {len(products)} products from {len(active_brands)} brands")
         except Exception as e:
             print(f"❌ CRAWL ERROR: {e}")
             import traceback
             traceback.print_exc()
-            crawl_progress["done"] = True
-            crawl_progress["status"] = "error"
-            crawl_progress["message"] = f"Error: {str(e)[:100]}"
+            progress["done"] = True
+            progress["status"] = "error"
+            progress["message"] = f"Error: {str(e)[:100]}"
         finally:
             crawl_lock.release()
 
@@ -1836,8 +1838,9 @@ def crawl():
 
 @app.route("/crawl-progress")
 def crawl_progress_endpoint():
-    """Polling endpoint — returns current crawl progress as JSON"""
-    return jsonify(crawl_progress)
+    """Polling endpoint — returns current user's crawl progress"""
+    uid = get_user_id()
+    return jsonify(get_crawl_progress(uid))
 
 
 @app.route("/upload-previous", methods=["POST"])
@@ -2040,12 +2043,12 @@ def action():
             save_session(session)
             return jsonify({"status": "ok", "skipped_brand": brand_to_skip})
     elif act == "finish":
-        global last_generated_xlsx
-        # Generate accumulated spreadsheet: previous + new
-        output_path = os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")
+        uid = get_user_id()
+        output_path = os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx")
         previous_rows = session.get("previous_rows", [])
         try:
-            _, last_generated_xlsx = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+            _, xlsx_buffer = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+            generated_xlsx_per_user[uid] = xlsx_buffer
         except Exception as e:
             print(f"Error generating spreadsheet: {e}")
             import traceback
@@ -2066,23 +2069,24 @@ def action():
 @app.route("/download")
 @login_required
 def download():
-    """Download generated spreadsheet — tries disk, memory, then regenerates from session"""
-    global last_generated_xlsx
-    path = os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")
+    """Download generated spreadsheet per user"""
+    uid = get_user_id()
+    filename = f"moder_plantilla_{uid}.xlsx"
+    path = os.path.join(DATA_DIR, filename)
 
-    # Try disk file first
+    # Try disk file first (per-user)
     if os.path.exists(path):
         try:
             return send_file(path, as_attachment=True, download_name="moder_plantilla_productos.xlsx")
         except Exception as e:
             print(f"Error sending file from disk: {e}")
 
-    # Fallback: serve from in-memory buffer (works on ephemeral filesystems like Render)
-    if last_generated_xlsx is not None:
+    # Fallback: serve from per-user in-memory buffer
+    if uid in generated_xlsx_per_user and generated_xlsx_per_user[uid] is not None:
         try:
-            last_generated_xlsx.seek(0)
+            generated_xlsx_per_user[uid].seek(0)
             return send_file(
-                last_generated_xlsx,
+                generated_xlsx_per_user[uid],
                 as_attachment=True,
                 download_name="moder_plantilla_productos.xlsx",
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2090,15 +2094,16 @@ def download():
         except Exception as e:
             print(f"Error sending file from memory: {e}")
 
-    # Last resort: regenerate from session data if available
+    # Last resort: regenerate from user's session data
     session = load_session()
     if session.get("accepted"):
         try:
             previous_rows = session.get("previous_rows", [])
-            _, last_generated_xlsx = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
-            last_generated_xlsx.seek(0)
+            _, xlsx_buffer = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
+            generated_xlsx_per_user[uid] = xlsx_buffer
+            xlsx_buffer.seek(0)
             return send_file(
-                last_generated_xlsx,
+                xlsx_buffer,
                 as_attachment=True,
                 download_name="moder_plantilla_productos.xlsx",
                 mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2124,8 +2129,8 @@ def cancel_curation():
     import time
     time.sleep(1)
     crawl_cancel_event.clear()
-    crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
-                      "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
+    uid = get_user_id()
+    crawl_progress_per_user[uid] = dict(_default_progress)
     return jsonify({"status": "ok", "message": "Curación cancelada. Sesión limpia."})
 
 
