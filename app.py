@@ -1707,6 +1707,7 @@ def index():
 
 
 @app.route("/update-brands", methods=["POST"])
+@login_required
 def update_brands():
     """Update active brand list"""
     country = load_active_country()
@@ -1717,6 +1718,7 @@ def update_brands():
 
 
 @app.route("/add-all-suggested", methods=["POST"])
+@login_required
 def add_all_suggested():
     """Add all suggested brands at once for current country"""
     country = load_active_country()
@@ -1734,6 +1736,7 @@ def add_all_suggested():
 
 
 @app.route("/add-brand", methods=["POST"])
+@login_required
 def add_brand():
     """Add a custom brand by URL"""
     country = load_active_country()
@@ -1765,6 +1768,7 @@ def add_brand():
 
 
 @app.route("/remove-brand", methods=["POST"])
+@login_required
 def remove_brand():
     """Remove a brand from active list"""
     country = load_active_country()
@@ -1777,6 +1781,7 @@ def remove_brand():
 
 
 @app.route("/remove-all-brands", methods=["POST"])
+@login_required
 def remove_all_brands():
     """Remove all brands from active list and clear curation session"""
     country = load_active_country()
@@ -1795,6 +1800,7 @@ def change_country():
 
 
 @app.route("/crawl", methods=["POST"])
+@login_required
 def crawl():
     """Start crawling in background thread"""
     country = load_active_country()
@@ -1841,6 +1847,7 @@ def crawl():
 
 
 @app.route("/crawl-progress")
+@login_required
 def crawl_progress_endpoint():
     """Polling endpoint — returns current user's crawl progress"""
     uid = get_user_id()
@@ -1848,6 +1855,7 @@ def crawl_progress_endpoint():
 
 
 @app.route("/upload-previous", methods=["POST"])
+@login_required
 def upload_previous():
     """Upload previous spreadsheet — becomes the accumulation base"""
     file = request.files.get("file")
@@ -1867,6 +1875,7 @@ def upload_previous():
 
 
 @app.route("/curate")
+@login_required
 def curate():
     """Main curation interface"""
     country = load_active_country()
@@ -1954,6 +1963,7 @@ def curate():
 
 
 @app.route("/curate/next")
+@login_required
 def curate_next():
     """AJAX endpoint — returns next product as JSON without full page reload"""
     country = load_active_country()
@@ -2014,6 +2024,7 @@ def curate_next():
 
 
 @app.route("/action", methods=["POST"])
+@login_required
 def action():
     """Handle accept/reject/finish"""
     data = request.json
@@ -2122,6 +2133,7 @@ def download():
 
 
 @app.route("/cancel-curation", methods=["POST"])
+@login_required
 def cancel_curation():
     """Cancel active curation — clears session, cache, and stops crawl"""
     uid = get_user_id()
@@ -2130,7 +2142,6 @@ def cancel_curation():
     # Signal crawl thread to stop (if running)
     crawl_cancel_event.set()
     # Wait briefly for graceful stop
-    import time
     time.sleep(1)
     crawl_cancel_event.clear()
     uid = get_user_id()
@@ -2163,6 +2174,7 @@ def clear_curation_session(country=None, user_id=None):
 
 
 @app.route("/reset", methods=["POST"])
+@login_required
 def reset():
     """Reset everything — session, cache, brands"""
     clear_curation_session(load_active_country())
