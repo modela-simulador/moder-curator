@@ -1306,13 +1306,12 @@ def deduplicate_products(products):
 # Global progress state — simple dict, read by polling endpoint
 _default_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
                      "products_found": 0, "current_brand": "", "done": False, "failed_brands": []}
-crawl_progress_per_user = {}  # {user_id: progress_dict}
+# Single global progress dict — simpler and guaranteed to work
+# Multi-user crawling is already prevented by crawl_lock
+crawl_progress = dict(_default_progress)
 
 def get_crawl_progress(uid=None):
-    uid = uid or "default"
-    if uid not in crawl_progress_per_user:
-        crawl_progress_per_user[uid] = dict(_default_progress)
-    return crawl_progress_per_user[uid]
+    return crawl_progress
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
 crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
@@ -2152,7 +2151,8 @@ def cancel_curation():
     time.sleep(1)
     crawl_cancel_event.clear()
     uid = get_user_id()
-    crawl_progress_per_user[uid] = dict(_default_progress)
+    crawl_progress.clear()
+    crawl_progress.update(_default_progress)
     return jsonify({"status": "ok", "message": "Curación cancelada. Sesión limpia."})
 
 
@@ -2177,7 +2177,8 @@ def clear_curation_session(country=None, user_id=None):
     if country:
         clear_cache_firestore(country)
     # Reset progress per user
-    crawl_progress_per_user[uid] = dict(_default_progress)
+    crawl_progress.clear()
+    crawl_progress.update(_default_progress)
 
 
 @app.route("/reset", methods=["POST"])
