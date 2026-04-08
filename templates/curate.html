@@ -220,7 +220,7 @@
         let accepted = {{ accepted_count }};
         let rejected = {{ rejected_count }};
         let pendingAction = null; // Track last action promise to ensure it completes before finish
-        const brandFilter = '{{ current_brand_filter | default("") }}';
+        const brandFilter = {{ (current_brand_filter or "") | tojson }};
         const curateUrl = brandFilter ? '/curate?brand=' + encodeURIComponent(brandFilter) : '/curate';
 
         function changeImage(thumb, url) {
@@ -296,15 +296,23 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, product: product })
+            }).catch(err => {
+                console.error('Action failed:', err);
+                // Retry once on failure
+                return fetch('/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, product: product })
+                });
             });
             const nextPromise = fetch('/curate/next' + qs).then(r => r.json());
 
             if (action === 'accept') accepted++;
             else rejected++;
 
-            // Wait for next product (action saves in background)
-            nextPromise.then(data => {
-                if (data.done) { window.location.href = '/curate'; return; }
+            // Wait for BOTH action save AND next product before updating UI
+            Promise.all([pendingAction, nextPromise]).then(([_, data]) => {
+                if (data.done) { pendingAction.then(() => { window.location.href = '/curate'; }); return; }
                 const p = data.product;
 
                 // Wait for slide-out animation to finish (150ms), then swap content instantly
@@ -371,9 +379,12 @@
             })
             .catch(err => {
                 console.error('Error:', err);
-                card.dataset.busy = 'false';
-                card.classList.remove('slide-right', 'slide-left');
-                window.location.href = curateUrl;
+                // Wait for pending action to save before navigating
+                (pendingAction || Promise.resolve()).finally(() => {
+                    card.dataset.busy = 'false';
+                    card.classList.remove('slide-right', 'slide-left');
+                    window.location.href = curateUrl;
+                });
             });
         }
 

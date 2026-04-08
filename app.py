@@ -26,6 +26,9 @@ from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "moder-curator-2026-secret")
+app.config['SESSION_COOKIE_SECURE'] = True      # Required for Safari Private Browsing
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Prevents cookie being dropped on cross-site
+app.config['SESSION_COOKIE_HTTPONLY'] = True      # XSS protection
 
 # ─── Auth ────────────────────────────────────────────────────────────────
 USERS = {
@@ -213,7 +216,7 @@ def load_session(user_id=None):
                     # Migrar al nuevo formato per-user
                     save_session(data, uid)
                     return data
-        except:
+        except Exception:
             pass
     return {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
 
@@ -1325,15 +1328,17 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
     Uses a global dict for progress (read by polling endpoint).
     Saves partial cache after each brand for resilience.
     """
+    global crawl_progress
     if progress is None:
-        progress = _default_progress.copy()
-    # MUST mutate the dict (not replace) so polling endpoint sees updates
+        progress = crawl_progress
+    # Ensure we're mutating the global dict that the polling endpoint reads
     crawl_progress = progress
     if brands is None:
         brands = load_active_brands()
     if cache_file is None:
         cache_file = CRAWL_CACHE
 
+    crawl_cancel_event.clear()  # Reset cancel signal from previous cancellation
     crawl_progress.clear()
     crawl_progress.update({
         "status": "running", "message": "Iniciando...",
@@ -1353,7 +1358,7 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
                     if b not in prev_products_by_brand:
                         prev_products_by_brand[b] = []
                     prev_products_by_brand[b].append(p)
-        except:
+        except Exception:
             pass
 
     all_products = []
@@ -1975,7 +1980,7 @@ def curate_next():
         try:
             with open(cache_path) as f:
                 products = json.load(f).get("products", [])
-        except:
+        except Exception:
             pass
     if not products:
         return jsonify({"done": True, "accepted": len(session.get("accepted", []))})
@@ -2147,9 +2152,8 @@ def cancel_curation():
     clear_curation_session(country)
     # Signal crawl thread to stop (if running)
     crawl_cancel_event.set()
-    # Wait briefly for graceful stop
-    time.sleep(1)
-    crawl_cancel_event.clear()
+    # Don't clear the event here — let the crawl thread clear it when it exits
+    # This ensures the crawl sees the cancel signal even if it's sleeping between brands
     uid = get_user_id()
     crawl_progress.clear()
     crawl_progress.update(_default_progress)
