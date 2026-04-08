@@ -126,10 +126,11 @@ def get_brands_file_for_country(country_code):
         return os.path.join(DATA_DIR, f"active_brands_{country_code}.json")
     return os.path.join(DATA_DIR, "active_brands.json")
 
-def get_cache_file_for_country(country_code):
-    """Each country gets its own crawl cache"""
+def get_cache_file_for_country(country_code, user_id=None):
+    """Each user+country gets its own crawl cache"""
+    uid = user_id or get_user_id()
     if country_code:
-        return os.path.join(DATA_DIR, f"crawl_cache_{country_code}.json")
+        return os.path.join(DATA_DIR, f"crawl_cache_{uid}_{country_code}.json")
     return CRAWL_CACHE
 
 BRANDS_FILE = os.path.join(DATA_DIR, "active_brands.json")
@@ -1319,7 +1320,7 @@ crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 generated_xlsx_per_user = {}  # {user_id: BytesIO buffer}
 
 
-def crawl_all(brands=None, cache_file=None, progress=None):
+def crawl_all(brands=None, cache_file=None, progress=None, country=None):
     """Crawl all brands, deduplicate, and cache results.
 
     Uses a global dict for progress (read by polling endpoint).
@@ -1327,18 +1328,20 @@ def crawl_all(brands=None, cache_file=None, progress=None):
     """
     if progress is None:
         progress = _default_progress.copy()
-    crawl_progress = progress  # Alias for backward compat
+    # MUST mutate the dict (not replace) so polling endpoint sees updates
+    crawl_progress = progress
     if brands is None:
         brands = load_active_brands()
     if cache_file is None:
         cache_file = CRAWL_CACHE
 
-    crawl_progress = {
+    crawl_progress.clear()
+    crawl_progress.update({
         "status": "running", "message": "Iniciando...",
         "brand_idx": 0, "brand_total": len(brands),
         "products_found": 0, "current_brand": "", "done": False,
         "failed_brands": []
-    }
+    })
 
     # Load previous cache to preserve data for brands that fail
     prev_products_by_brand = {}
@@ -1431,9 +1434,10 @@ def crawl_all(brands=None, cache_file=None, progress=None):
     os.replace(tmp_path, cache_file)
     print(f"Cache saved: {len(all_products)} products → {cache_file}")
     # También guardar en Firestore para persistencia
-    country = load_active_country()
     if country:
         save_cache_firestore(all_products, country)
+    else:
+        print("⚠️ No country set — cache not saved to Firestore")
 
     crawl_progress["status"] = "done"
     crawl_progress["done"] = True
@@ -1819,7 +1823,7 @@ def crawl():
     def run_crawl():
         try:
             print(f"🚀 Starting crawl for {len(active_brands)} brands in {country} (user: {uid})...")
-            products = crawl_all(active_brands, cache_file=cache_file, progress=progress)
+            products = crawl_all(active_brands, cache_file=cache_file, progress=progress, country=country)
             print(f"✅ Crawl complete: {len(products)} products from {len(active_brands)} brands")
         except Exception as e:
             print(f"❌ CRAWL ERROR: {e}")
@@ -2120,7 +2124,7 @@ def download():
 @app.route("/cancel-curation", methods=["POST"])
 def cancel_curation():
     """Cancel active curation — clears session, cache, and stops crawl"""
-    global crawl_progress
+    uid = get_user_id()
     country = load_active_country()
     clear_curation_session(country)
     # Signal crawl thread to stop (if running)
@@ -2137,7 +2141,6 @@ def cancel_curation():
 def clear_curation_session(country=None, user_id=None):
     """Clear all curation data — session, cache, crawl state (local + Firestore)"""
     uid = user_id or get_user_id()
-    global crawl_progress
     # Clear local per-user session file
     user_session = _session_file_for_user(uid)
     if os.path.exists(user_session):
@@ -2146,7 +2149,7 @@ def clear_curation_session(country=None, user_id=None):
     if os.path.exists(SESSION_FILE):
         os.remove(SESSION_FILE)
     if country:
-        cache = get_cache_file_for_country(country)
+        cache = get_cache_file_for_country(country, uid)
         if os.path.exists(cache):
             os.remove(cache)
     if os.path.exists(CRAWL_CACHE):
@@ -2155,9 +2158,8 @@ def clear_curation_session(country=None, user_id=None):
     clear_session_firestore(uid)
     if country:
         clear_cache_firestore(country)
-    # Reset progress
-    crawl_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
-                      "products_found": 0, "done": False, "current_brand": "", "failed_brands": []}
+    # Reset progress per user
+    crawl_progress_per_user[uid] = dict(_default_progress)
 
 
 @app.route("/reset", methods=["POST"])
