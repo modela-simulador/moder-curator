@@ -203,7 +203,7 @@
             </button>
         </div>
         <div class="action-row" style="margin-top: 8px;">
-            <button class="btn btn-finish" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none;">
+            <button class="btn btn-finish" id="skipBrandBtn" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none;">
                 ⏭ Saltar marca ({{ product.brand }})
             </button>
         </div>
@@ -355,8 +355,8 @@
                         thumbs.style.display = 'none';
                     }
                     // Skip brand button
-                    const skipBtn = document.querySelector('.skip-brand');
-                    if (skipBtn) skipBtn.textContent = 'Saltar ' + (p.brand || 'marca');
+                    const skipBtn = document.getElementById('skipBrandBtn');
+                    if (skipBtn) skipBtn.textContent = '⏭ Saltar marca (' + (p.brand || 'marca') + ')';
                 }, 150);
             })
             .catch(err => {

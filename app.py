@@ -1506,7 +1506,7 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
 
             row += 1
             new_count += 1
-        position += 1
+            position += 1
 
     # Column widths
     widths = [55, 22, 8, 10, 8, 10, 15, 15, 15, 15]
@@ -1820,8 +1820,10 @@ def curate():
         except (json.JSONDecodeError, IOError):
             pass
     if not products:
-        # Fallback to legacy global cache
-        products = load_crawl_cache()
+        # Fallback to Firestore cache (no legacy global — prevents country leak)
+        fs_products = load_cache_firestore(country)
+        if fs_products:
+            products = fs_products
     if not products:
         return redirect(url_for("index"))
 
@@ -1967,11 +1969,12 @@ def action():
         if brand_to_skip:
             country = load_active_country()
             cache_file = get_cache_file_for_country(country)
+            products = []
             if os.path.exists(cache_file):
                 with open(cache_file) as f:
                     products = json.load(f).get("products", [])
-            else:
-                products = load_crawl_cache() or []
+            if not products:
+                products = load_cache_firestore(country) or []
             previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
             processed = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []))
             processed.update(u.rstrip("/") for u in session.get("rejected", []))
