@@ -219,7 +219,39 @@
         let product = {{ product | tojson }};
         let accepted = {{ accepted_count }};
         let rejected = {{ rejected_count }};
-        let pendingAction = null; // Track last action promise to ensure it completes before finish
+        let pendingAction = null;
+        let productQueue = [];    // Pre-fetched products for instant switching
+        let isFetchingBatch = false;
+
+        // Prefetch next batch of products
+        function prefetchBatch() {
+            if (isFetchingBatch || productQueue.length >= 3) return;
+            isFetchingBatch = true;
+            const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
+            fetch('/curate/next' + qs)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data.done && data.products) {
+                        // Add products we don't already have
+                        const existingUrls = new Set(productQueue.map(p => p.product_url));
+                        for (const p of data.products) {
+                            if (!existingUrls.has(p.product_url)) {
+                                productQueue.push(p);
+                                // Prefetch image into browser cache
+                                if (p.image_url) {
+                                    const img = new Image();
+                                    img.src = p.image_url;
+                                }
+                            }
+                        }
+                    }
+                })
+                .catch(() => {})
+                .finally(() => { isFetchingBatch = false; });
+        }
+
+        // Start prefetching immediately
+        prefetchBatch();
         const brandFilter = {{ (current_brand_filter or "") | tojson }};
         const curateUrl = brandFilter ? '/curate?brand=' + encodeURIComponent(brandFilter) : '/curate';
 
@@ -287,105 +319,119 @@
             if (card.dataset.busy === 'true') return;
             card.dataset.busy = 'true';
 
-            // Animate out (fast 150ms)
+            // Animate out (fast)
             card.classList.add(action === 'accept' ? 'slide-right' : 'slide-left');
 
-            // Fire BOTH requests in PARALLEL — don't wait for action to complete before fetching next
-            const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
+            // Fire action save (fire-and-forget with retry)
             pendingAction = fetch('/action', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, product: product })
-            }).catch(err => {
-                console.error('Action failed:', err);
-                // Retry once on failure
-                return fetch('/action', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ action: action, product: product })
-                });
-            });
-            const nextPromise = fetch('/curate/next' + qs).then(r => r.json());
+            }).catch(() => fetch('/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, product: product })
+            }).catch(() => {}));
 
             if (action === 'accept') accepted++;
             else rejected++;
 
-            // Wait for BOTH action save AND next product before updating UI
-            Promise.all([pendingAction, nextPromise]).then(([_, data]) => {
-                if (data.done) { pendingAction.then(() => { window.location.href = '/curate'; }); return; }
-                const p = data.product;
+            // Remove current product from queue (it was just acted on)
+            productQueue = productQueue.filter(p => p.product_url !== product.product_url);
+
+            // Get next product from LOCAL QUEUE (instant!) or fetch from server
+            let nextProduct = productQueue.shift();
+            const showNext = (p, serverData) => {
 
                 // Wait for slide-out animation to finish (150ms), then swap content instantly
-                setTimeout(() => {
-                    // Hide card, swap content, show card
-                    card.style.transition = 'none';
-                    card.classList.remove('slide-right', 'slide-left');
+                // Swap content instantly
+                card.style.transition = 'none';
+                card.classList.remove('slide-right', 'slide-left');
 
-                    // Update all fields
-                    const mainImg = document.getElementById('mainImage');
-                    if (mainImg) mainImg.src = p.image_url || (p.all_images && p.all_images[0]) || '';
-                    const nameEl = document.querySelector('.product-name');
-                    if (nameEl) nameEl.textContent = p.name || '';
-                    const brandEl = document.querySelector('.product-brand');
-                    if (brandEl) brandEl.textContent = p.brand || '';
-                    const badgeEl = document.querySelector('.product-badge');
-                    if (badgeEl) badgeEl.textContent = p.brand || '';
-                    const descEl = document.querySelector('.product-desc');
-                    if (descEl) descEl.textContent = (p.description || '').substring(0, 200);
-                    const priceEl = document.querySelector('.product-price');
-                    if (priceEl) priceEl.textContent = p.price ? '$' + String(p.price).replace('.00','') : '';
-                    const catEl = document.querySelector('.product-category');
-                    if (catEl) catEl.textContent = p.category || '';
-                    const linkEl = document.querySelector('a.product-link');
-                    if (linkEl) { linkEl.href = p.product_url || ''; linkEl.textContent = 'Ver en ' + (p.brand || 'tienda') + ' ↗'; }
-                    const accEl = document.getElementById('acceptedCount');
-                    if (accEl) accEl.textContent = '✓ ' + data.accepted_count;
-                    const rejEl = document.getElementById('rejectedCount');
-                    if (rejEl) rejEl.textContent = '✗ ' + data.rejected_count;
-                    const remEl = document.getElementById('remainingCount');
-                    if (remEl) remEl.textContent = data.remaining;
-                    const progBar = document.getElementById('progressFill');
-                    if (progBar) progBar.style.width = ((data.progress / data.total) * 100) + '%';
-                    product = p;
+                const mainImg = document.getElementById('mainImage');
+                if (mainImg) mainImg.src = p.image_url || (p.all_images && p.all_images[0]) || '';
+                const nameEl = document.querySelector('.product-name');
+                if (nameEl) nameEl.textContent = p.name || '';
+                const brandEl = document.querySelector('.product-brand');
+                if (brandEl) brandEl.textContent = p.brand || '';
+                const badgeEl = document.querySelector('.product-badge');
+                if (badgeEl) badgeEl.textContent = p.brand || '';
+                const descEl = document.querySelector('.product-desc');
+                if (descEl) descEl.textContent = (p.description || '').substring(0, 200);
+                const priceEl = document.querySelector('.product-price');
+                if (priceEl) priceEl.textContent = p.price ? '$' + String(p.price).replace('.00','') : '';
+                const catEl = document.querySelector('.product-category');
+                if (catEl) catEl.textContent = p.category || '';
+                const linkEl = document.querySelector('a.product-link');
+                if (linkEl) { linkEl.href = p.product_url || ''; linkEl.textContent = 'Ver en ' + (p.brand || 'tienda') + ' ↗'; }
+                const accEl = document.getElementById('acceptedCount');
+                if (accEl) accEl.textContent = '✓ ' + accepted;
+                const rejEl = document.getElementById('rejectedCount');
+                if (rejEl) rejEl.textContent = '✗ ' + rejected;
+                const remEl = document.getElementById('remainingCount');
+                if (remEl && serverData) remEl.textContent = serverData.remaining;
+                const progBar = document.getElementById('progressFill');
+                if (progBar && serverData) progBar.style.width = ((serverData.progress / serverData.total) * 100) + '%';
+                product = p;
 
-                    // Thumbnails
-                    const thumbs = document.getElementById('thumbnails');
-                    if (thumbs && p.all_images && p.all_images.length > 1) {
-                        while (thumbs.firstChild) thumbs.removeChild(thumbs.firstChild);
-                        p.all_images.slice(0, 5).forEach((imgUrl, i) => {
-                            const img = document.createElement('img');
-                            img.src = imgUrl;
-                            img.className = 'thumb' + (i === 0 ? ' active' : '');
-                            img.addEventListener('click', () => {
-                                document.getElementById('mainImage').src = imgUrl;
-                                thumbs.querySelectorAll('.thumb').forEach(t => t.classList.remove('active'));
-                                img.classList.add('active');
-                            });
-                            img.onerror = () => { img.style.display = 'none'; };
-                            thumbs.appendChild(img);
+                const thumbs = document.getElementById('thumbnails');
+                if (thumbs && p.all_images && p.all_images.length > 1) {
+                    while (thumbs.firstChild) thumbs.removeChild(thumbs.firstChild);
+                    p.all_images.slice(0, 5).forEach((imgUrl, i) => {
+                        const img = document.createElement('img');
+                        img.src = imgUrl;
+                        img.className = 'thumb' + (i === 0 ? ' active' : '');
+                        img.addEventListener('click', () => {
+                            document.getElementById('mainImage').src = imgUrl;
+                            thumbs.querySelectorAll('.thumb').forEach(t => t.classList.remove('active'));
+                            img.classList.add('active');
                         });
-                        thumbs.style.display = '';
-                    } else if (thumbs) { thumbs.style.display = 'none'; }
-
-                    const skipBtn = document.getElementById('skipBrandBtn');
-                    if (skipBtn) skipBtn.textContent = '⏭ Saltar marca (' + (p.brand || 'marca') + ')';
-
-                    // Re-enable transitions and unlock
-                    requestAnimationFrame(() => {
-                        card.style.transition = '';
-                        card.dataset.busy = 'false';
+                        img.onerror = () => { img.style.display = 'none'; };
+                        thumbs.appendChild(img);
                     });
-                }, 160);
-            })
-            .catch(err => {
-                console.error('Error:', err);
-                // Wait for pending action to save before navigating
-                (pendingAction || Promise.resolve()).finally(() => {
+                    thumbs.style.display = '';
+                } else if (thumbs) { thumbs.style.display = 'none'; }
+
+                const skipBtn = document.getElementById('skipBrandBtn');
+                if (skipBtn) skipBtn.textContent = '⏭ Saltar marca (' + (p.brand || 'marca') + ')';
+
+                requestAnimationFrame(() => {
+                    card.style.transition = '';
                     card.dataset.busy = 'false';
-                    card.classList.remove('slide-right', 'slide-left');
-                    window.location.href = curateUrl;
                 });
-            });
+
+                // Trigger prefetch of more products in background
+                prefetchBatch();
+            };
+
+            if (nextProduct) {
+                // INSTANT — product from local queue, no server wait
+                setTimeout(() => showNext(nextProduct, null), 160);
+            } else {
+                // Fallback — fetch from server
+                const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
+                fetch('/curate/next' + qs).then(r => r.json()).then(data => {
+                    if (data.done) { pendingAction.then(() => { window.location.href = '/curate'; }); return; }
+                    const p = data.products ? data.products[0] : data.product;
+                    // Add remaining products to queue
+                    if (data.products) {
+                        data.products.slice(1).forEach(pp => {
+                            if (!productQueue.find(q => q.product_url === pp.product_url)) {
+                                productQueue.push(pp);
+                                if (pp.image_url) { const img = new Image(); img.src = pp.image_url; }
+                            }
+                        });
+                    }
+                    setTimeout(() => showNext(p, data), 160);
+                }).catch(err => {
+                    console.error('Error:', err);
+                    (pendingAction || Promise.resolve()).finally(() => {
+                        card.dataset.busy = 'false';
+                        card.classList.remove('slide-right', 'slide-left');
+                        window.location.href = curateUrl;
+                    });
+                });
+            }
         }
 
         // Keyboard shortcuts

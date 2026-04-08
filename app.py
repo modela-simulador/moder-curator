@@ -1336,6 +1336,27 @@ crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
 generated_xlsx_per_user = {}  # {user_id: BytesIO buffer}
+_products_cache = {}  # {cache_file_path: (mtime, products_list)} — avoids re-reading JSON on every request
+
+def _get_cached_products(country):
+    """Load products from in-memory cache or file. Avoids re-parsing JSON on every /curate/next call."""
+    cache_path = get_cache_file_for_country(country)
+    if os.path.exists(cache_path):
+        mtime = os.path.getmtime(cache_path)
+        if cache_path in _products_cache and _products_cache[cache_path][0] == mtime:
+            return _products_cache[cache_path][1]
+        try:
+            with open(cache_path) as f:
+                products = json.load(f).get("products", [])
+            _products_cache[cache_path] = (mtime, products)
+            return products
+        except Exception:
+            pass
+    # Fallback to Firestore
+    fs_products = load_cache_firestore(country)
+    if fs_products:
+        return fs_products
+    return None
 
 
 def crawl_all(brands=None, cache_file=None, progress=None, country=None):
@@ -1988,17 +2009,12 @@ def curate():
 @app.route("/curate/next")
 @login_required
 def curate_next():
-    """AJAX endpoint — returns next product as JSON without full page reload"""
+    """AJAX endpoint — returns BATCH of next 5 products for instant client-side switching"""
     country = load_active_country()
     session = load_session()
-    cache_path = get_cache_file_for_country(country)
-    products = None
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path) as f:
-                products = json.load(f).get("products", [])
-        except Exception:
-            pass
+
+    # Use in-memory cache to avoid re-reading JSON file every request
+    products = _get_cached_products(country)
     if not products:
         return jsonify({"done": True, "accepted": len(session.get("accepted", []))})
 
@@ -2033,11 +2049,16 @@ def curate_next():
         return jsonify({"done": True, "accepted": len(session.get("accepted", [])),
                         "total": len(products)})
 
-    current = remaining[0]
-    current["_previous_count"] = len(session.get("previous_rows", []))
+    # Return BATCH of up to 5 products for instant client-side switching
+    batch_size = min(5, len(remaining))
+    batch = remaining[:batch_size]
+    prev_count = len(session.get("previous_rows", []))
+    for p in batch:
+        p["_previous_count"] = prev_count
     return jsonify({
         "done": False,
-        "product": current,
+        "products": batch,          # Array of up to 5 products
+        "product": batch[0],        # First product (backward compat)
         "remaining": len(remaining),
         "total": len(products),
         "progress": len(products) - len(all_remaining),
