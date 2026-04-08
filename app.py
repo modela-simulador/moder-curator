@@ -2064,9 +2064,13 @@ def action():
         uid = get_user_id()
         output_path = os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx")
         previous_rows = session.get("previous_rows", [])
+        print(f"📊 FINISH: user={uid}, accepted={len(session.get('accepted',[]))}, previous={len(previous_rows)}")
+        if not session.get("accepted"):
+            return jsonify({"status": "error", "error": "No hay productos aceptados. Acepta al menos uno antes de finalizar."}), 400
         try:
             _, xlsx_buffer = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
             generated_xlsx_per_user[uid] = xlsx_buffer
+            print(f"✅ Planilla generada: {len(session['accepted'])} productos → {output_path}")
         except Exception as e:
             print(f"Error generating spreadsheet: {e}")
             import traceback

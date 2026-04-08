@@ -219,6 +219,7 @@
         let product = {{ product | tojson }};
         let accepted = {{ accepted_count }};
         let rejected = {{ rejected_count }};
+        let pendingAction = null; // Track last action promise to ensure it completes before finish
         const brandFilter = '{{ current_brand_filter | default("") }}';
         const curateUrl = brandFilter ? '/curate?brand=' + encodeURIComponent(brandFilter) : '/curate';
 
@@ -250,9 +251,13 @@
                 if (!confirm(msg)) return;
 
                 const finishBtn = document.querySelector('.btn-finish');
-                if (finishBtn) { finishBtn.textContent = 'Generando...'; finishBtn.disabled = true; }
+                if (finishBtn) { finishBtn.textContent = 'Guardando...'; finishBtn.disabled = true; }
 
-                fetch('/action', {
+                // Wait for any pending action to complete before finishing
+                const waitForPending = pendingAction ? pendingAction : Promise.resolve();
+                waitForPending.then(() => {
+                    if (finishBtn) finishBtn.textContent = 'Generando planilla...';
+                    return fetch('/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ action: 'finish' })
@@ -274,6 +279,7 @@
                     alert('Error: ' + err.message);
                     if (finishBtn) { finishBtn.textContent = '✓ Finalizar'; finishBtn.disabled = false; }
                 });
+                }); // close waitForPending.then
                 return;
             }
 
@@ -286,7 +292,7 @@
 
             // Fire BOTH requests in PARALLEL — don't wait for action to complete before fetching next
             const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
-            const actionPromise = fetch('/action', {
+            pendingAction = fetch('/action', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, product: product })
