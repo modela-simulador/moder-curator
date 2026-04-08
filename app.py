@@ -1626,7 +1626,7 @@ def login_page():
 
 @app.route("/login", methods=["POST"])
 def login_action():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     username = data.get("username", "").strip()
     password = data.get("password", "")
 
@@ -1649,7 +1649,7 @@ def logout():
 @login_required
 def select_country():
     """Set the active country for this session"""
-    data = request.json
+    data = request.get_json(silent=True) or {}
     country_code = data.get("country", "").upper()
     if country_code not in COUNTRIES:
         return jsonify({"error": "Invalid country"}), 400
@@ -1711,7 +1711,7 @@ def index():
 def update_brands():
     """Update active brand list"""
     country = load_active_country()
-    data = request.json
+    data = request.get_json(silent=True) or {}
     brands = data.get("brands", [])
     save_active_brands(brands, country)
     return jsonify({"status": "ok", "count": len(brands)})
@@ -1740,7 +1740,7 @@ def add_all_suggested():
 def add_brand():
     """Add a custom brand by URL"""
     country = load_active_country()
-    data = request.json
+    data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip().upper()
     url = data.get("url", "").strip()
 
@@ -1772,7 +1772,7 @@ def add_brand():
 def remove_brand():
     """Remove a brand from active list"""
     country = load_active_country()
-    data = request.json
+    data = request.get_json(silent=True) or {}
     domain = data.get("domain", "")
     active = load_active_brands(country)
     active = [b for b in active if b["domain"] != domain]
@@ -1816,7 +1816,8 @@ def crawl():
     session = load_session()
     session["current_index"] = 0
     # Only clear if explicitly requested (not by default — protects user data)
-    if request.json and request.json.get("clear_session"):
+    req_data = request.get_json(silent=True) or {}
+    if req_data.get("clear_session"):
         session["accepted"] = []
         session["rejected"] = []
     save_session(session)
@@ -2029,7 +2030,7 @@ def curate_next():
 @login_required
 def action():
     """Handle accept/reject/finish"""
-    data = request.json
+    data = request.get_json(silent=True) or {}
     act = data.get("action")
     product = data.get("product")
     session = load_session()
