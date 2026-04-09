@@ -237,11 +237,15 @@ def save_cache_firestore(products, country):
             "country": country,
             "updated_at": firestore_timestamp(),
         })
-        # Guardar productos en chunks de 100 (cada producto puede ser grande)
-        # Primero limpiar chunks anteriores
-        old_chunks = db.collection("curator").document(f"cache_{country}").collection("chunks").stream()
+        # Guardar productos en chunks de 100
+        # Batch: delete old + write new in one operation (prevents race conditions)
+        old_chunks = list(db.collection("curator").document(f"cache_{country}").collection("chunks").stream())
+        batch = db.batch()
         for old in old_chunks:
-            old.reference.delete()
+            batch.delete(old.reference)
+        # Commit deletes first (batch limit is 500)
+        if old_chunks:
+            batch.commit()
 
         for i in range(0, len(products), 100):
             # Trim products to avoid 1MB Firestore document limit

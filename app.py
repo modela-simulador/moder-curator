@@ -1988,8 +1988,26 @@ def health_check():
     status["crawl_locked"] = locked
 
     # In-memory state
-    status["cached_sessions"] = len(_session_cache) if '_session_cache' in dir() else 0
+    status["cached_sessions"] = len(_session_cache)
     status["cached_xlsx"] = len(generated_xlsx_per_user)
+
+    # Periodic cleanup: evict stale local files older than 7 days
+    try:
+        import glob as _glob
+        cutoff = _t.time() - (7 * 86400)
+        stale = 0
+        for f in _glob.glob(os.path.join(DATA_DIR, "session_*.json")):
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+                stale += 1
+        for f in _glob.glob(os.path.join(DATA_DIR, "crawl_cache_*.json")):
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+                stale += 1
+        if stale:
+            status["stale_files_cleaned"] = stale
+    except Exception:
+        pass
 
     code = 200 if status["status"] == "ok" else 503
     return jsonify(status), code
@@ -2383,18 +2401,8 @@ def curate():
     active_brands = load_active_brands(country)
     active_brand_names = set(b["name"] for b in active_brands) if active_brands else set()
 
-    # Get remaining products — filtered by active brands
+    # Single pass: compute remaining (filtered) + all_remaining (unfiltered) + brand counts
     remaining = []
-    for p in products:
-        url = p["product_url"].rstrip("/")
-        # Skip products from brands not in active list
-        if active_brand_names and p.get("brand", "") not in active_brand_names:
-            continue
-        if url not in previous_urls and url not in processed_urls:
-            if not brand_filter or p.get("brand", "") == brand_filter:
-                remaining.append(p)
-
-    # Get all unique brands from remaining (unfiltered by brand_filter) for the filter UI
     all_remaining = []
     for p in products:
         url = p["product_url"].rstrip("/")
@@ -2402,6 +2410,8 @@ def curate():
             continue
         if url not in previous_urls and url not in processed_urls:
             all_remaining.append(p)
+            if not brand_filter or p.get("brand", "") == brand_filter:
+                remaining.append(p)
 
     # Sort remaining by brand so products are grouped
     remaining.sort(key=lambda p: p.get("brand", ""))
