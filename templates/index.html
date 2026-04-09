@@ -235,6 +235,9 @@
                     <span id="crawlBrandInfo">—</span>
                     <span id="crawlProductCount">0 productos</span>
                 </div>
+                <button onclick="forceUnlock()" style="margin-top:12px; background:none; border:1px solid #ccc; color:#999; font-size:12px; padding:8px 16px; border-radius:8px; cursor:pointer; width:100%;">
+                    🔓 Desbloquear si se quedó pegado
+                </button>
             </div>
         </div>
 
@@ -450,6 +453,11 @@
                             });
                     }, 2000);
                 });
+        }
+
+        function forceUnlock() {
+            fetch('/force-unlock', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                .then(() => location.reload());
         }
 
         function resetSession() {

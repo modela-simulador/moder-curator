@@ -1387,6 +1387,7 @@ crawl_progress = dict(_default_progress)
 def get_crawl_progress(uid=None):
     return crawl_progress
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
+crawl_lock_time = 0  # Timestamp when lock was acquired (auto-expire after 10 min)
 crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
@@ -1971,9 +1972,21 @@ def crawl():
     if not active_brands:
         return jsonify({"error": "No brands selected"}), 400
 
-    # Prevent concurrent crawls
+    # Prevent concurrent crawls — auto-expire lock after 10 minutes
+    import time as _time
+    global crawl_lock_time
     if not crawl_lock.acquire(blocking=False):
-        return jsonify({"error": "Ya hay un crawl en progreso. Espera a que termine."}), 429
+        # Check if lock is stale (>10 min = crashed thread)
+        if _time.time() - crawl_lock_time > 600:
+            print("⚠️ Crawl lock stale (>10 min), force-releasing...")
+            try:
+                crawl_lock.release()
+            except RuntimeError:
+                pass
+            crawl_lock.acquire(blocking=False)
+        else:
+            return jsonify({"error": "Ya hay un crawl en progreso. Espera a que termine."}), 429
+    crawl_lock_time = _time.time()
 
     # Reset curation index but PRESERVE accepted/rejected if user has data
     session = load_session()
@@ -2008,6 +2021,22 @@ def crawl():
     t = threading.Thread(target=run_crawl, daemon=True)
     t.start()
     return jsonify({"status": "started", "brands": len(active_brands)})
+
+
+@app.route("/force-unlock", methods=["POST"])
+@login_required
+def force_unlock():
+    """Force-release the crawl lock if it's stuck"""
+    try:
+        crawl_lock.release()
+    except RuntimeError:
+        pass  # Already unlocked
+    uid = get_user_id()
+    progress = get_crawl_progress(uid)
+    progress["done"] = True
+    progress["status"] = "cancelled"
+    progress["message"] = "Crawl desbloqueado manualmente"
+    return jsonify({"status": "ok"})
 
 
 @app.route("/crawl-progress")
