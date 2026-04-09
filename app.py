@@ -7,6 +7,7 @@ Web interface for curating crawled products into the MODÈR import spreadsheet.
 import os
 import json
 import io
+import re
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
@@ -411,7 +412,7 @@ MAX_XML_SIZE = 5 * 1024 * 1024  # 5MB max for sitemap XML
 
 def safe_parse_xml(content):
     """Parse XML with size limit to prevent memory bombs."""
-    import xml.etree.ElementTree as ET
+
     if len(content) > MAX_XML_SIZE:
         print(f"  ⚠ XML too large ({len(content) / 1024 / 1024:.1f}MB), skipping")
         return None
@@ -562,7 +563,7 @@ def crawl_woocommerce(brand, progress_callback=None):
 
 def _fetch_woo_sitemap_urls(base_url):
     """Try WooCommerce product sitemaps to discover all published product URLs"""
-    import xml.etree.ElementTree as ET
+
 
     sitemap_paths = [
         "/product-sitemap.xml",
@@ -781,7 +782,7 @@ def _scrape_single_product_page(url, brand):
                     break
 
         # Extract price (works across WooCommerce, Shopify, generic)
-        import re as re_mod
+
         price = ""
         for price_sel in [
             ".price .woocommerce-Price-amount", "[itemprop='price']",
@@ -794,7 +795,7 @@ def _scrape_single_product_page(url, brand):
                     price = price_el.get("content", "")
                 else:
                     price_text = price_el.get_text(strip=True)
-                    nums = re_mod.findall(r'[\d.,]+', price_text)
+                    nums = re.findall(r'[\d.,]+', price_text)
                     if nums:
                         price = nums[0].replace(".", "").replace(",", "")
                 if price:
@@ -1037,7 +1038,7 @@ def crawl_html_scrape(brand, progress_callback=None):
 
 def _fetch_generic_sitemap_urls(base_url, domain=""):
     """Try common sitemap locations to discover product URLs for any platform"""
-    import xml.etree.ElementTree as ET
+
 
     sitemap_paths = [
         "/product-sitemap.xml",
@@ -1133,7 +1134,7 @@ def crawl_jumpseller(brand, progress_callback=None):
     }
 
     # ── PHASE 1: Sitemap — try to scrape each non-page URL ──────────
-    import xml.etree.ElementTree as ET
+
     candidate_urls = []
 
     try:
@@ -1373,7 +1374,7 @@ def crawl_shopify(brand, progress_callback=None):
 
 def _fetch_shopify_sitemap_urls(base_url):
     """Fetch product URLs from Shopify sitemap"""
-    import xml.etree.ElementTree as ET
+
 
     product_urls = []
     try:
@@ -1448,7 +1449,7 @@ def categorize(tags, title):
 
 def filter_unwanted_products(products):
     """Remove kids products and non-fashion items"""
-    import re as re_mod
+
 
     EXCLUDE_KEYWORDS = [
         # Kids
@@ -1467,9 +1468,9 @@ def filter_unwanted_products(products):
 
     # Build regex pattern with word boundaries to avoid false positives
     # e.g. "pet" should NOT match "petite", "book" should NOT match "facebook"
-    pattern = re_mod.compile(
-        r'\b(' + '|'.join(re_mod.escape(kw) for kw in EXCLUDE_KEYWORDS) + r')\b',
-        re_mod.IGNORECASE
+    pattern = re.compile(
+        r'\b(' + '|'.join(re.escape(kw) for kw in EXCLUDE_KEYWORDS) + r')\b',
+        re.IGNORECASE
     )
 
     filtered = []
@@ -1500,7 +1501,7 @@ def deduplicate_products(products):
     seen_names = set()
     unique = []
 
-    import re as re_mod
+
 
     for p in products:
         # Primary dedup: by product URL (most reliable)
@@ -1510,9 +1511,9 @@ def deduplicate_products(products):
 
         # Secondary dedup: normalize name to catch size/color variants
         raw_name = p.get("name", "")
-        clean_name = re_mod.sub(r'\s*/\s*(XS|S|M|L|XL|XXL|XXXL|\d{2,3})\s*$', '', raw_name, flags=re_mod.IGNORECASE)
-        clean_name = re_mod.sub(r'\s*-\s*(Negro|Blanco|Rojo|Azul|Verde|Beige|Crudo|Café|Gris|Rosa|Nude|Burdeo|Camel|Mostaza|Terracota|Ivory|Black|White|Red|Blue|Green)\s*$', '', clean_name, flags=re_mod.IGNORECASE)
-        clean_name = re_mod.sub(r'\s*talla\s*\d+\s*$', '', clean_name, flags=re_mod.IGNORECASE)
+        clean_name = re.sub(r'\s*/\s*(XS|S|M|L|XL|XXL|XXXL|\d{2,3})\s*$', '', raw_name, flags=re.IGNORECASE)
+        clean_name = re.sub(r'\s*-\s*(Negro|Blanco|Rojo|Azul|Verde|Beige|Crudo|Café|Gris|Rosa|Nude|Burdeo|Camel|Mostaza|Terracota|Ivory|Black|White|Red|Blue|Green)\s*$', '', clean_name, flags=re.IGNORECASE)
+        clean_name = re.sub(r'\s*talla\s*\d+\s*$', '', clean_name, flags=re.IGNORECASE)
         name_key = f"{p['brand']}|{clean_name.strip().lower()}"
 
         if name_key in seen_names:
