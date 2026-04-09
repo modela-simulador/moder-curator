@@ -1647,7 +1647,7 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
             ws.cell(row=row, column=3, value=idx + 1).border = thin_border
             ws.cell(row=row, column=4, value=position).border = thin_border
             ws.cell(row=row, column=5, value="No").border = thin_border
-            ws.cell(row=row, column=6, value="No").border = thin_border
+            ws.cell(row=row, column=6, value="Si" if p.get("trend") else "No").border = thin_border
             ws.cell(row=row, column=7, value=p.get("category", "")).border = thin_border
             ws.cell(row=row, column=8, value=tags[0] if len(tags) > 0 else "").border = thin_border
             ws.cell(row=row, column=9, value=tags[1] if len(tags) > 1 else "").border = thin_border
@@ -1730,6 +1730,41 @@ def login_action():
     if username in USERS and USERS[username] == password:
         flask_session["logged_in"] = True
         flask_session["username"] = username
+        # Auto-reset: each login starts completely fresh
+        uid = username
+        # Try to find active country from Firestore (flask session doesn't have it yet)
+        country = ""
+        try:
+            fs = load_country_firestore()
+            if fs and isinstance(fs, dict):
+                country = fs.get(uid, "")
+            elif fs and isinstance(fs, str):
+                country = fs
+        except Exception:
+            pass
+        if country:
+            clear_curation_session(country, uid)
+            # Clear brands
+            brands_path = _brands_file_for_user(country, uid)
+            if os.path.exists(brands_path):
+                os.remove(brands_path)
+            save_brands_firestore([], f"{uid}_{country}")
+        # Clear country → forces country selection
+        flask_session["active_country"] = ""
+        try:
+            save_country_firestore({uid: ""})
+        except Exception:
+            pass
+        # Clear generated xlsx and previous upload
+        for fpath in [os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx"),
+                      os.path.join(DATA_DIR, f"previous_upload_{uid}.xlsx")]:
+            if os.path.exists(fpath):
+                os.remove(fpath)
+        generated_xlsx_per_user.pop(uid, None)
+        # Clear all brand files for this user across all countries
+        import glob as glob_mod
+        for f in glob_mod.glob(os.path.join(DATA_DIR, f"brands_{uid}_*.json")):
+            os.remove(f)
         return jsonify({"status": "ok"})
     return jsonify({"status": "error", "error": "Usuario o contraseña incorrectos"}), 401
 
@@ -2170,6 +2205,9 @@ def action():
     session = load_session()
 
     if act == "accept" and product:
+        session["accepted"].append(product)
+    elif act == "trend" and product:
+        product["trend"] = True
         session["accepted"].append(product)
     elif act == "reject" and product:
         session["rejected"].append(product.get("product_url", ""))
