@@ -68,11 +68,11 @@
         /* Keyboard hints */
         .kbd { display: inline-block; background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; margin-left: 4px; }
 
-        /* Slide animation — ultra fast */
-        .product-card { transition: transform 0.12s ease-out, opacity 0.12s ease-out; position: relative; }
+        /* Slide animation */
+        .product-card { transition: transform 0.25s ease, opacity 0.25s ease; position: relative; }
         .product-card.dragging { transition: none; }
-        .slide-left { transform: translateX(-100%) rotate(-5deg); opacity: 0; }
-        .slide-right { transform: translateX(100%) rotate(5deg); opacity: 0; }
+        .slide-left { transform: translateX(-110%); opacity: 0; }
+        .slide-right { transform: translateX(110%); opacity: 0; }
 
         /* Swipe indicator overlays */
         .swipe-indicator { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 48px; font-weight: 900; padding: 12px 24px; border-radius: 16px; border: 4px solid; opacity: 0; z-index: 10; pointer-events: none; transition: opacity 0.15s; }
@@ -512,54 +512,92 @@
             if (e.key === 'Escape') doAction('finish');
         });
 
-        // Swipe gesture (Tinder-style)
+        // Swipe gesture — stable, no rotation, direction-locked
         (function() {
             const card = document.getElementById('productCard');
             const acceptIndicator = document.getElementById('swipeAccept');
             const rejectIndicator = document.getElementById('swipeReject');
-            let startX = 0, currentX = 0, isDragging = false;
-            const threshold = 80; // px to trigger action
+            let startX = 0, startY = 0, currentX = 0;
+            let isDragging = false;
+            let directionLocked = false; // null until decided
+            let isHorizontal = false;
+            const threshold = 120; // px to trigger action
+            const lockDistance = 12; // px before deciding direction
 
             card.addEventListener('touchstart', (e) => {
                 if (card.dataset.busy === 'true' || actionCooldown) return;
                 startX = e.touches[0].clientX;
+                startY = e.touches[0].clientY;
                 currentX = startX;
                 isDragging = true;
-                card.classList.add('dragging');
+                directionLocked = false;
+                isHorizontal = false;
             }, { passive: true });
 
             card.addEventListener('touchmove', (e) => {
                 if (!isDragging) return;
-                currentX = e.touches[0].clientX;
+                const tx = e.touches[0].clientX;
+                const ty = e.touches[0].clientY;
+
+                // Lock direction after moving lockDistance px
+                if (!directionLocked) {
+                    const adx = Math.abs(tx - startX);
+                    const ady = Math.abs(ty - startY);
+                    if (adx > lockDistance || ady > lockDistance) {
+                        directionLocked = true;
+                        isHorizontal = adx > ady;
+                        if (isHorizontal) {
+                            card.classList.add('dragging');
+                        }
+                    }
+                    return; // Don't move card until direction is decided
+                }
+
+                // If vertical scroll, let browser handle it
+                if (!isHorizontal) return;
+
+                // Prevent vertical scroll while swiping horizontally
+                e.preventDefault();
+
+                currentX = tx;
                 const dx = currentX - startX;
-                card.style.transform = `translateX(${dx}px) rotate(${dx * 0.05}deg)`;
-                // Show indicators based on direction
-                const progress = Math.min(Math.abs(dx) / threshold, 1);
-                if (dx > 20) {
-                    acceptIndicator.style.opacity = progress;
+                // Pure horizontal translation — no rotation, no distortion
+                card.style.transform = `translateX(${dx}px)`;
+
+                // Show indicator when past 40% of threshold
+                const progress = Math.max(0, (Math.abs(dx) - threshold * 0.3) / (threshold * 0.7));
+                if (dx > 30) {
+                    acceptIndicator.style.opacity = Math.min(progress, 1);
                     rejectIndicator.style.opacity = 0;
-                } else if (dx < -20) {
-                    rejectIndicator.style.opacity = progress;
+                } else if (dx < -30) {
+                    rejectIndicator.style.opacity = Math.min(progress, 1);
                     acceptIndicator.style.opacity = 0;
                 } else {
                     acceptIndicator.style.opacity = 0;
                     rejectIndicator.style.opacity = 0;
                 }
-            }, { passive: true });
+            }, { passive: false }); // passive:false to allow preventDefault
 
             card.addEventListener('touchend', () => {
                 if (!isDragging) return;
                 isDragging = false;
+                directionLocked = false;
                 card.classList.remove('dragging');
                 acceptIndicator.style.opacity = 0;
                 rejectIndicator.style.opacity = 0;
+
+                if (!isHorizontal) return; // Was a vertical scroll, do nothing
+
                 const dx = currentX - startX;
                 if (dx > threshold) {
                     doAction('accept');
                 } else if (dx < -threshold) {
                     doAction('reject');
                 } else {
+                    // Snap back with spring animation
+                    card.style.transition = 'transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)';
                     card.style.transform = '';
+                    setTimeout(() => { card.style.transition = ''; }, 300);
                 }
             });
         })();
