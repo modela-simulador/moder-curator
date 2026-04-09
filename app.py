@@ -1976,11 +1976,13 @@ def curate():
         if url not in previous_urls and url not in processed_urls:
             all_remaining.append(p)
 
+    # Sort remaining by brand so products are grouped
+    remaining.sort(key=lambda p: p.get("brand", ""))
+
     available_brands = {}
     for p in all_remaining:
         b = p.get("brand", "Desconocida")
         available_brands[b] = available_brands.get(b, 0) + 1
-    # Sort by count descending
     sorted_brands = sorted(available_brands.items(), key=lambda x: -x[1])
 
     if not remaining:
@@ -2045,11 +2047,13 @@ def curate_next():
         b = p.get("brand", "Desconocida")
         available_brands[b] = available_brands.get(b, 0) + 1
 
+    # Sort remaining by brand name so products are grouped
+    remaining.sort(key=lambda p: p.get("brand", ""))
+
     if not remaining:
         return jsonify({"done": True, "accepted": len(session.get("accepted", [])),
                         "total": len(products)})
 
-    # Return BATCH of up to 5 products for instant client-side switching
     batch_size = min(15, len(remaining))
     batch = remaining[:batch_size]
     prev_count = len(session.get("previous_rows", []))
@@ -2227,13 +2231,28 @@ def clear_curation_session(country=None, user_id=None):
 @app.route("/reset", methods=["POST"])
 @login_required
 def reset():
-    """Reset everything — session, cache, brands"""
-    clear_curation_session(load_active_country())
+    """Reset everything — session, cache, brands, country — complete clean slate"""
+    uid = get_user_id()
+    country = load_active_country()
+    clear_curation_session(country, uid)
+    # Clear per-user brands file + Firestore
+    if country:
+        brands_path = _brands_file_for_user(country, uid)
+        if os.path.exists(brands_path):
+            os.remove(brands_path)
+        save_brands_firestore([], f"{uid}_{country}")
+    # Clear legacy files
     for f in [BRANDS_FILE,
-              os.path.join(DATA_DIR, "previous_upload.xlsx"),
-              os.path.join(DATA_DIR, "moder_plantilla_productos.xlsx")]:
+              os.path.join(DATA_DIR, f"previous_upload_{uid}.xlsx"),
+              os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx")]:
         if os.path.exists(f):
             os.remove(f)
+    # Clear all country brand files for this user
+    import glob
+    for f in glob.glob(os.path.join(DATA_DIR, f"brands_{uid}_*.json")):
+        os.remove(f)
+    # Clear country
+    save_active_country("")
     return jsonify({"status": "ok"})
 
 

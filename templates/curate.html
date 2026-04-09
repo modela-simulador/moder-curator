@@ -24,7 +24,7 @@
         .container { max-width: 500px; margin: 0 auto; padding: 80px 16px 180px; }
 
         .product-card { background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
-        .product-image-wrap { position: relative; width: 100%; aspect-ratio: 2/3; overflow: hidden; background: #f5f5f5; }
+        .product-image-wrap { position: relative; width: 100%; aspect-ratio: 3/4; overflow: hidden; background: #f5f5f5; }
 
         /* Loading overlay when waiting for images */
         .loading-overlay { position: absolute; inset: 0; background: #f5f5f5; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2; transition: opacity 0.3s; }
@@ -69,10 +69,15 @@
         .kbd { display: inline-block; background: #eee; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-family: monospace; margin-left: 4px; }
 
         /* Slide animation — ultra fast */
-        .product-card { transition: transform 0.08s ease-out, opacity 0.08s ease-out; }
-        .slide-left { transform: translateX(-100%); opacity: 0; }
-        .slide-right { transform: translateX(100%); opacity: 0; }
-        .slide-in { transform: translateX(0); opacity: 1; }
+        .product-card { transition: transform 0.12s ease-out, opacity 0.12s ease-out; position: relative; }
+        .product-card.dragging { transition: none; }
+        .slide-left { transform: translateX(-100%) rotate(-5deg); opacity: 0; }
+        .slide-right { transform: translateX(100%) rotate(5deg); opacity: 0; }
+
+        /* Swipe indicator overlays */
+        .swipe-indicator { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 48px; font-weight: 900; padding: 12px 24px; border-radius: 16px; border: 4px solid; opacity: 0; z-index: 10; pointer-events: none; transition: opacity 0.15s; }
+        .swipe-accept { color: #2e7d32; border-color: #2e7d32; background: rgba(232,245,233,0.9); }
+        .swipe-reject { color: #c62828; border-color: #c62828; background: rgba(252,228,236,0.9); }
 
         /* Brand filter bar */
         .brand-filter { position: fixed; top: 53px; left: 0; right: 0; background: white; z-index: 99; padding: 8px 16px; border-bottom: 1px solid #eee; display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
@@ -117,14 +122,14 @@
 </head>
 <body>
     <div class="header">
-        <div style="display:flex;align-items:center;gap:12px">
+        <div style="display:flex;align-items:center;gap:6px">
             <div class="header-logo">MODÈR</div>
-            <button onclick="cancelAndReset()" style="background:none;border:none;color:#c62828;font-size:11px;cursor:pointer;padding:4px 8px;">✕ Cancelar</button>
-            <button onclick="doAction('finish')" style="background:none;border:1px solid #1c1c1e;color:#1c1c1e;font-size:11px;cursor:pointer;padding:4px 10px;border-radius:8px;font-weight:600;">■ Generar planilla</button>
+            <span class="accepted" id="acceptedCount" style="font-size:11px;padding:3px 8px;">✓ {{ accepted_count }}</span>
+            <span class="rejected" id="rejectedCount" style="font-size:11px;padding:3px 8px;">✗ {{ rejected_count }}</span>
         </div>
-        <div class="header-stats">
-            <span class="accepted" id="acceptedCount">✓ {{ accepted_count }}</span>
-            <span class="rejected" id="rejectedCount">✗ {{ rejected_count }}</span>
+        <div style="display:flex;align-items:center;gap:6px">
+            <button onclick="cancelAndReset()" style="background:none;border:1px solid #eee;color:#999;font-size:11px;cursor:pointer;padding:6px 12px;border-radius:8px;">✕ Cancelar</button>
+            <button onclick="doAction('finish')" style="background:#1c1c1e;color:white;border:none;font-size:11px;cursor:pointer;padding:6px 12px;border-radius:8px;font-weight:600;">■ Generar planilla</button>
         </div>
     </div>
 
@@ -149,6 +154,8 @@
 
     <div class="container" style="padding-top: {% if available_brands %}120px{% else %}80px{% endif %};">
         <div class="product-card" id="productCard">
+            <div class="swipe-indicator swipe-accept" id="swipeAccept">✓</div>
+            <div class="swipe-indicator swipe-reject" id="swipeReject">✗</div>
             <div class="product-image-wrap">
                 <div class="loading-overlay hidden" id="loadingOverlay">
                     <div class="loading-spinner"></div>
@@ -480,6 +487,58 @@
             if (e.key === 'ArrowLeft' || e.key === 'r') doAction('reject');
             if (e.key === 'Escape') doAction('finish');
         });
+
+        // Swipe gesture (Tinder-style)
+        (function() {
+            const card = document.getElementById('productCard');
+            const acceptIndicator = document.getElementById('swipeAccept');
+            const rejectIndicator = document.getElementById('swipeReject');
+            let startX = 0, currentX = 0, isDragging = false;
+            const threshold = 80; // px to trigger action
+
+            card.addEventListener('touchstart', (e) => {
+                if (card.dataset.busy === 'true' || actionCooldown) return;
+                startX = e.touches[0].clientX;
+                currentX = startX;
+                isDragging = true;
+                card.classList.add('dragging');
+            }, { passive: true });
+
+            card.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                currentX = e.touches[0].clientX;
+                const dx = currentX - startX;
+                card.style.transform = `translateX(${dx}px) rotate(${dx * 0.05}deg)`;
+                // Show indicators based on direction
+                const progress = Math.min(Math.abs(dx) / threshold, 1);
+                if (dx > 20) {
+                    acceptIndicator.style.opacity = progress;
+                    rejectIndicator.style.opacity = 0;
+                } else if (dx < -20) {
+                    rejectIndicator.style.opacity = progress;
+                    acceptIndicator.style.opacity = 0;
+                } else {
+                    acceptIndicator.style.opacity = 0;
+                    rejectIndicator.style.opacity = 0;
+                }
+            }, { passive: true });
+
+            card.addEventListener('touchend', () => {
+                if (!isDragging) return;
+                isDragging = false;
+                card.classList.remove('dragging');
+                acceptIndicator.style.opacity = 0;
+                rejectIndicator.style.opacity = 0;
+                const dx = currentX - startX;
+                if (dx > threshold) {
+                    doAction('accept');
+                } else if (dx < -threshold) {
+                    doAction('reject');
+                } else {
+                    card.style.transform = '';
+                }
+            });
+        })();
     </script>
 </body>
 </html>
