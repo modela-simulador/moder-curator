@@ -1471,7 +1471,40 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
         def progress_cb(msg):
             crawl_progress["message"] = msg
 
-        products = crawl_brand(brand, progress_callback=progress_cb)
+        # Run crawl_brand with a 3-minute timeout per brand
+        brand_result = [None]
+        brand_error = [None]
+        def _crawl_one():
+            try:
+                brand_result[0] = crawl_brand(brand, progress_callback=progress_cb)
+            except Exception as e:
+                brand_error[0] = e
+
+        brand_thread = threading.Thread(target=_crawl_one, daemon=True)
+        brand_thread.start()
+        brand_thread.join(timeout=180)  # 3 minutes max per brand
+
+        if brand_thread.is_alive():
+            print(f"  ⏱ TIMEOUT: {brand['name']} took >3 min, skipping")
+            crawl_progress["message"] = f"⏱ {brand['name']}: timeout (>3 min)"
+            crawl_progress["failed_brands"].append(brand["name"])
+            # Thread is daemon, will die when main exits
+            prev = prev_products_by_brand.get(brand["name"], [])
+            if prev:
+                all_products.extend(prev)
+            time.sleep(1)
+            continue
+
+        if brand_error[0]:
+            print(f"  ❌ {brand['name']} error: {brand_error[0]}")
+            crawl_progress["failed_brands"].append(brand["name"])
+            prev = prev_products_by_brand.get(brand["name"], [])
+            if prev:
+                all_products.extend(prev)
+            time.sleep(1)
+            continue
+
+        products = brand_result[0]
 
         if not products:
             # PRESERVE previous data for this brand if crawl fails
