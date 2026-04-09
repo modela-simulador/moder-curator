@@ -8,6 +8,7 @@ import os
 import json
 import io
 import re
+import xml.etree.ElementTree as ET
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template, request, jsonify, send_file, redirect, url_for
@@ -317,20 +318,14 @@ def is_crawl_allowed(url, user_agent="*"):
         del _robots_cache[oldest]
 
     try:
+        from urllib.robotparser import RobotFileParser
         robots_url = f"{parsed.scheme}://{domain}/robots.txt"
-        resp = requests.get(robots_url, headers=HEADERS, timeout=10)
-        if resp.status_code != 200:
-            _robots_cache[domain] = (True, now)  # No robots.txt = allowed
-            return True
-        # Simple parser — check for "Disallow: /"
-        for line in resp.text.splitlines():
-            line = line.strip().lower()
-            if line.startswith("disallow: /") and line == "disallow: /":
-                # Check if it applies to our user-agent or *
-                _robots_cache[domain] = (False, now)
-                return False
-        _robots_cache[domain] = (True, now)
-        return True
+        rp = RobotFileParser()
+        rp.set_url(robots_url)
+        rp.read()
+        allowed = rp.can_fetch("*", url)
+        _robots_cache[domain] = (allowed, now)
+        return allowed
     except Exception:
         _robots_cache[domain] = (True, now)  # On error, allow crawl
         return True
@@ -409,6 +404,48 @@ def invalidate_session_cache(user_id=None):
 # ─── Crawling ────────────────────────────────────────────────────────────
 
 MAX_XML_SIZE = 5 * 1024 * 1024  # 5MB max for sitemap XML
+
+# Countries that use dot as thousands separator, comma as decimal (or no decimal)
+# CL, AR, CO, MX use: 29.990 or 29,990 (no decimals for CLP/COP/MXN/ARS)
+# ES uses: 29,90 or 1.299,00 (comma = decimal)
+_DOT_THOUSANDS_COUNTRIES = {"CL", "AR", "CO", "MX"}  # dot = thousands, no decimals
+_COMMA_DECIMAL_COUNTRIES = {"ES"}  # comma = decimal, dot = thousands
+
+def _normalize_price(price_str):
+    """Normalize price string based on format detection.
+    Chilean/LatAm: 29.990 → 29990 | Spanish: 29,90 → 29.90 | 1.299,00 → 1299.00
+    """
+    s = price_str.strip()
+    # Detect format: if has comma after dot → comma is decimal (ES format: 1.299,00)
+    if ',' in s and '.' in s:
+        if s.rindex(',') > s.rindex('.'):
+            # Comma is decimal: 1.299,00 → 1299.00
+            return s.replace(".", "").replace(",", ".")
+        else:
+            # Dot is decimal: 1,299.00 → 1299.00
+            return s.replace(",", "")
+    elif ',' in s:
+        # Only comma: could be "29,990" (thousands) or "29,90" (decimal)
+        parts = s.split(',')
+        if len(parts[-1]) == 2:
+            # Two decimals after comma → comma is decimal: 29,90 → 29.90
+            return s.replace(",", ".")
+        else:
+            # Comma is thousands: 29,990 → 29990
+            return s.replace(",", "")
+    elif '.' in s:
+        # Only dot: could be "29.990" (thousands) or "29.90" (decimal)
+        parts = s.split('.')
+        if len(parts[-1]) == 3 and len(parts) > 1:
+            # Three digits after last dot → dot is thousands: 29.990 → 29990
+            return s.replace(".", "")
+        elif len(parts[-1]) == 2:
+            # Two digits after dot → dot is decimal: 29.90 → 29.90
+            return s
+        else:
+            # Ambiguous — strip dots (assume thousands)
+            return s.replace(".", "")
+    return s
 
 def safe_parse_xml(content):
     """Parse XML with size limit to prevent memory bombs."""
@@ -797,7 +834,7 @@ def _scrape_single_product_page(url, brand):
                     price_text = price_el.get_text(strip=True)
                     nums = re.findall(r'[\d.,]+', price_text)
                     if nums:
-                        price = nums[0].replace(".", "").replace(",", "")
+                        price = _normalize_price(nums[0])
                 if price:
                     break
 
@@ -1141,20 +1178,18 @@ def crawl_jumpseller(brand, progress_callback=None):
         resp = requests.get(f"{base_url}/sitemap.xml", headers=HEADERS, timeout=15)
         if resp.status_code == 200:
             root = safe_parse_xml(resp.content)
-            if root is None:
-                return []
-            ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-            for url_el in root.findall('s:url', ns):
-                loc = url_el.find('s:loc', ns)
-                if loc is None:
-                    continue
-                u = loc.text.strip().rstrip("/")
-                if u == base_url:
-                    continue
-                # Extract the slug (path after domain)
-                slug = u.replace(base_url, "").strip("/").split("/")[0].lower()
-                if slug and slug not in SKIP_SLUGS:
-                    candidate_urls.append(u)
+            if root is not None:
+                ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+                for url_el in root.findall('s:url', ns):
+                    loc = url_el.find('s:loc', ns)
+                    if loc is None:
+                        continue
+                    u = loc.text.strip().rstrip("/")
+                    if u == base_url:
+                        continue
+                    slug = u.replace(base_url, "").strip("/").split("/")[0].lower()
+                    if slug and slug not in SKIP_SLUGS:
+                        candidate_urls.append(u)
     except Exception as e:
         print(f"    Jumpseller sitemap error: {e}")
 
@@ -2532,12 +2567,20 @@ def action():
     session = load_session()
 
     if act == "accept" and product:
+        # Remove from rejected if it was there (dual-tab protection)
+        url = product.get("product_url", "").rstrip("/")
+        session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
         session["accepted"].append(product)
     elif act == "trend" and product:
         product["trend"] = True
+        url = product.get("product_url", "").rstrip("/")
+        session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
         session["accepted"].append(product)
     elif act == "reject" and product:
-        session["rejected"].append(product.get("product_url", ""))
+        url = product.get("product_url", "").rstrip("/")
+        # Remove from accepted if it was there (dual-tab protection)
+        session["accepted"] = [p for p in session["accepted"] if p.get("product_url", "").rstrip("/") != url]
+        session["rejected"].append(url)
     elif act == "skip_brand":
         # Reject ALL remaining products from this brand
         brand_to_skip = data.get("brand", "")

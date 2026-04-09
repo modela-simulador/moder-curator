@@ -531,9 +531,23 @@
                 const rejEl = document.getElementById('rejectedCount');
                 if (rejEl) rejEl.textContent = '✗ ' + rejected;
                 const remEl = document.getElementById('remainingCount');
-                if (remEl && serverData) remEl.textContent = serverData.remaining;
+                if (remEl) {
+                    if (serverData) remEl.textContent = serverData.remaining;
+                    else {
+                        // Estimate: decrement remaining locally
+                        const cur = parseInt(remEl.textContent) || 0;
+                        if (cur > 0) remEl.textContent = cur - 1;
+                    }
+                }
                 const progBar = document.getElementById('progressFill');
-                if (progBar && serverData) progBar.style.width = ((serverData.progress / serverData.total) * 100) + '%';
+                if (progBar) {
+                    if (serverData) progBar.style.width = ((serverData.progress / serverData.total) * 100) + '%';
+                    else {
+                        // Estimate progress from accepted + rejected
+                        const total = accepted + rejected + (parseInt(document.getElementById('remainingCount')?.textContent) || 0);
+                        if (total > 0) progBar.style.width = (((accepted + rejected) / total) * 100) + '%';
+                    }
+                }
                 product = p;
 
                 const thumbs = document.getElementById('thumbnails');
@@ -597,6 +611,9 @@
 
         function cancelAndReset() {
             if (!confirm('¿Cancelar curación? Se perderán todos los productos aceptados y rechazados.')) return;
+            // Clear local action queue to prevent replay in next session
+            actionQueue = [];
+            try { localStorage.removeItem('moder_action_queue'); } catch(e) {}
             fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
                 .then(() => { window.location.href = '/'; });
         }

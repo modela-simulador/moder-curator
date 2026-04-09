@@ -386,7 +386,7 @@
             if (!confirm('¿RESETEAR TODO? Se borrarán marcas, productos, sesión, cache y país. El robot quedará completamente limpio.')) return;
             document.body.style.opacity = '0.5';
             document.body.style.pointerEvents = 'none';
-            // Borra TODO: marcas + sesión + cache + país
+            try { localStorage.removeItem('moder_action_queue'); } catch(e) {}
             Promise.all([
                 fetch('/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }),
                 fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }),
