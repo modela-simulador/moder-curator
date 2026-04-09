@@ -2054,7 +2054,7 @@ def curate_next():
         return jsonify({"done": True, "accepted": len(session.get("accepted", [])),
                         "total": len(products)})
 
-    batch_size = min(15, len(remaining))
+    batch_size = min(20, len(remaining))
     batch = remaining[:batch_size]
     prev_count = len(session.get("previous_rows", []))
     for p in batch:

@@ -213,8 +213,12 @@
             </div>
         </div>
 
-        <div class="remaining">
+        <div class="remaining" id="remainingInfo">
             <span id="remainingCount">{{ remaining }}</span> productos restantes
+        </div>
+        <div id="prefetchStatus" style="text-align:center;padding:6px;font-size:11px;color:#aaa;display:none">
+            <span class="loading-spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:6px"></span>
+            Precargando más productos...
         </div>
     </div>
 
@@ -243,22 +247,25 @@
         let isFetchingBatch = false;
         let actionCooldown = false; // 0.5s cooldown between actions
 
-        // Prefetch next batch of products (aggressive — keep 12+ products ready)
+        // Prefetch next batch of products (aggressive — keep 20+ products ready)
         function prefetchBatch() {
-            if (isFetchingBatch || productQueue.length >= 12) return;
+            if (isFetchingBatch || productQueue.length >= 20) {
+                updatePrefetchStatus();
+                return;
+            }
             isFetchingBatch = true;
+            updatePrefetchStatus();
             const qs = curateUrl.includes('?') ? curateUrl.substring(curateUrl.indexOf('?')) : '';
             fetch('/curate/next' + qs)
                 .then(r => r.json())
                 .then(data => {
                     if (!data.done && data.products) {
-                        // Add products we don't already have
                         const existingUrls = new Set(productQueue.map(p => p.product_url));
-                        existingUrls.add(product.product_url); // Exclude current product
+                        existingUrls.add(product.product_url);
                         for (const p of data.products) {
                             if (!existingUrls.has(p.product_url)) {
                                 productQueue.push(p);
-                                // Prefetch ALL images into browser cache (main + thumbnails)
+                                // Prefetch ALL images into browser cache
                                 if (p.image_url) { const i = new Image(); i.src = p.image_url; }
                                 if (p.all_images) {
                                     p.all_images.forEach(url => { const i = new Image(); i.src = url; });
@@ -268,7 +275,24 @@
                     }
                 })
                 .catch(() => {})
-                .finally(() => { isFetchingBatch = false; });
+                .finally(() => {
+                    isFetchingBatch = false;
+                    updatePrefetchStatus();
+                    // If queue is still low, fetch another batch immediately
+                    if (productQueue.length < 10) {
+                        setTimeout(prefetchBatch, 100);
+                    }
+                });
+        }
+
+        function updatePrefetchStatus() {
+            const el = document.getElementById('prefetchStatus');
+            if (!el) return;
+            if (isFetchingBatch && productQueue.length < 3) {
+                el.style.display = 'block';
+            } else {
+                el.style.display = 'none';
+            }
         }
 
         // Must define URLs BEFORE calling prefetchBatch
