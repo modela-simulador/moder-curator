@@ -25,17 +25,45 @@ import time
 from datetime import datetime
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "moder-curator-2026-secret")
+
+# Secret key MUST be set via environment variable — no weak fallback
+_secret = os.environ.get("SECRET_KEY", "")
+if not _secret:
+    import secrets
+    _secret = secrets.token_hex(32)
+    print("⚠️ SECRET_KEY not set — generated random key (sessions won't survive restarts)")
+app.secret_key = _secret
+
 app.config['SESSION_COOKIE_SECURE'] = True      # Required for Safari Private Browsing
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Prevents cookie being dropped on cross-site
 app.config['SESSION_COOKIE_HTTPONLY'] = True      # XSS protection
 
 # ─── Auth ────────────────────────────────────────────────────────────────
-USERS = {
-    "sebastian": "moder2026",
-    "antonia": "moder2026",
-    "sofia": "moder2026",
-}
+# Credentials from env vars. Format: "user1:hash1,user2:hash2"
+# Generate hashes: python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('mypassword'))"
+from werkzeug.security import check_password_hash, generate_password_hash
+
+def _load_users():
+    """Load users from CURATOR_USERS env var, fallback to defaults for dev."""
+    env_users = os.environ.get("CURATOR_USERS", "")
+    if env_users:
+        users = {}
+        for entry in env_users.split(","):
+            if ":" in entry:
+                name, pw_hash = entry.split(":", 1)
+                users[name.strip()] = pw_hash.strip()
+        if users:
+            return users
+    # Fallback for development — will print warning
+    print("⚠️ CURATOR_USERS not set — using default credentials (set env var for production)")
+    default_pw = generate_password_hash("moder2026", method="pbkdf2:sha256")
+    return {
+        "sebastian": default_pw,
+        "antonia": default_pw,
+        "sofia": default_pw,
+    }
+
+USERS = _load_users()
 
 from functools import wraps
 from flask import session as flask_session
@@ -251,10 +279,50 @@ def save_active_brands(brands, country_code=None, user_id=None):
     save_brands_firestore(brands, f"{uid}_{cc}")
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# ─── Session state ───────────────────────────────────────────────────────
+# ─── Robots.txt cache ────────────────────────────────────────────────────
+_robots_cache = {}  # {domain: (allowed: bool, timestamp)}
+
+def is_crawl_allowed(url, user_agent="*"):
+    """Check robots.txt for a URL. Cached per domain for 1 hour."""
+    from urllib.parse import urlparse
+    import time as _time
+    parsed = urlparse(url)
+    domain = parsed.netloc
+    now = _time.time()
+
+    # Check cache (1 hour TTL)
+    if domain in _robots_cache:
+        allowed, ts = _robots_cache[domain]
+        if now - ts < 3600:
+            return allowed
+
+    try:
+        robots_url = f"{parsed.scheme}://{domain}/robots.txt"
+        resp = requests.get(robots_url, headers=HEADERS, timeout=10)
+        if resp.status_code != 200:
+            _robots_cache[domain] = (True, now)  # No robots.txt = allowed
+            return True
+        # Simple parser — check for "Disallow: /"
+        for line in resp.text.splitlines():
+            line = line.strip().lower()
+            if line.startswith("disallow: /") and line == "disallow: /":
+                # Check if it applies to our user-agent or *
+                _robots_cache[domain] = (False, now)
+                return False
+        _robots_cache[domain] = (True, now)
+        return True
+    except Exception:
+        _robots_cache[domain] = (True, now)  # On error, allow crawl
+        return True
+
+# ─── Session state (with in-memory cache) ────────────────────────────────
+
+_session_cache = {}       # {uid: session_dict} — avoids re-reading Firestore on every action
+_session_dirty = set()    # UIDs with unsaved Firestore changes
+_session_save_lock = threading.Lock()
 
 def _session_file_for_user(user_id=None):
     """Get session file path for a specific user"""
@@ -263,9 +331,13 @@ def _session_file_for_user(user_id=None):
 
 def load_session(user_id=None):
     uid = user_id or get_user_id()
+    # In-memory cache hit — instant
+    if uid in _session_cache:
+        return _session_cache[uid]
     # Intentar Firestore primero (con user prefix)
     fs_data = load_session_firestore(uid)
     if fs_data:
+        _session_cache[uid] = fs_data
         return fs_data
     # Fallback a archivo local (per-user)
     path = _session_file_for_user(uid)
@@ -274,7 +346,9 @@ def load_session(user_id=None):
             with open(path) as f:
                 content = f.read().strip()
                 if content:
-                    return json.loads(content)
+                    data = json.loads(content)
+                    _session_cache[uid] = data
+                    return data
         except (json.JSONDecodeError, IOError):
             pass
     # Legacy fallback (migrar si existe)
@@ -284,16 +358,19 @@ def load_session(user_id=None):
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
-                    # Migrar al nuevo formato per-user
                     save_session(data, uid)
                     return data
         except Exception:
             pass
-    return {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
+    default = {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
+    _session_cache[uid] = default
+    return default
 
 def save_session(session, user_id=None):
     uid = user_id or get_user_id()
-    # Guardar en archivo local per-user
+    # Update in-memory cache
+    _session_cache[uid] = session
+    # Guardar en archivo local per-user (fast, synchronous)
     try:
         path = _session_file_for_user(uid)
         tmp_path = path + ".tmp"
@@ -304,11 +381,25 @@ def save_session(session, user_id=None):
         os.replace(tmp_path, path)
     except Exception as e:
         print(f"⚠️ Error guardando session local: {e}")
-    # Guardar en Firestore per-user
-    try:
-        save_session_firestore(session, uid)
-    except Exception as e:
-        print(f"⚠️ Error guardando session en Firestore: {e}")
+    # Firestore write — deferred to background thread to avoid blocking the UI
+    _session_dirty.add(uid)
+    def _write_firestore():
+        with _session_save_lock:
+            if uid not in _session_dirty:
+                return  # Another thread already wrote it
+            _session_dirty.discard(uid)
+            try:
+                save_session_firestore(session, uid)
+            except Exception as e:
+                print(f"⚠️ Error guardando session en Firestore: {e}")
+                _session_dirty.add(uid)  # Mark as dirty for next save
+    threading.Thread(target=_write_firestore, daemon=True).start()
+
+def invalidate_session_cache(user_id=None):
+    """Clear session cache for a user (e.g., after reset)"""
+    uid = user_id or get_user_id()
+    _session_cache.pop(uid, None)
+    _session_dirty.discard(uid)
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
@@ -1088,6 +1179,13 @@ def crawl_tiendanube(brand, progress_callback=None):
 
 def crawl_brand(brand, progress_callback=None):
     """Fetch all products — auto-detects platform and uses the right method"""
+    # Check robots.txt first
+    if not is_crawl_allowed(brand["url"]):
+        if progress_callback:
+            progress_callback(f"⚠ {brand['name']}: bloqueado por robots.txt")
+        print(f"  🚫 {brand['name']}: blocked by robots.txt")
+        return []
+
     if progress_callback:
         progress_callback(f"Detectando plataforma de {brand['name']}...")
 
@@ -1392,7 +1490,8 @@ crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
 generated_xlsx_per_user = {}  # {user_id: BytesIO buffer}
-_products_cache = {}  # {cache_file_path: (mtime, products_list)} — avoids re-reading JSON on every request
+_products_cache = {}  # {cache_file_path: (mtime, products_list)} — max 5 entries
+_PRODUCTS_CACHE_MAX = 5
 
 def _get_cached_products(country):
     """Load products from in-memory cache or file. Avoids re-parsing JSON on every /curate/next call."""
@@ -1404,6 +1503,10 @@ def _get_cached_products(country):
         try:
             with open(cache_path) as f:
                 products = json.load(f).get("products", [])
+            # Evict oldest entry if cache is full
+            if len(_products_cache) >= _PRODUCTS_CACHE_MAX:
+                oldest_key = next(iter(_products_cache))
+                del _products_cache[oldest_key]
             _products_cache[cache_path] = (mtime, products)
             return products
         except Exception:
@@ -1573,6 +1676,23 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
     crawl_progress["done"] = True
     crawl_progress["products_found"] = len(all_products)
     crawl_progress["message"] = f"✅ Listo: {len(all_products)} productos de {len(brands)} marcas"
+
+    # Log crawl to Firestore for audit trail
+    try:
+        db = _get_db_safe()
+        if db:
+            uid = get_user_id()
+            db.collection("curator").document("_crawl_log").collection("runs").add({
+                "user": uid,
+                "country": country or "",
+                "brands_total": len(brands),
+                "brands_failed": crawl_progress.get("failed_brands", []),
+                "products_found": len(all_products),
+                "timestamp": firestore_timestamp(),
+                "duration_brands": {b["name"]: "ok" for b in brands if b["name"] not in crawl_progress.get("failed_brands", [])},
+            })
+    except Exception as e:
+        print(f"⚠️ Error logging crawl: {e}")
 
     return all_products
 
@@ -1747,6 +1867,68 @@ def parse_previous_spreadsheet(file_path):
 
 # ─── Auth Routes ─────────────────────────────────────────────────────────
 
+# ─── Health Check & Monitoring ─────────────────────────────────────────
+
+@app.route("/health")
+def health_check():
+    """Health check for Render + monitoring. No auth required."""
+    import time as _t
+    status = {"status": "ok", "timestamp": datetime.now().isoformat()}
+
+    # Check Firestore connectivity
+    try:
+        db = _get_db_safe()
+        if db:
+            db.collection("curator").document("_healthcheck").set({
+                "last_ping": datetime.now().isoformat()
+            })
+            status["firestore"] = "connected"
+        else:
+            status["firestore"] = "unavailable"
+            status["status"] = "degraded"
+    except Exception as e:
+        status["firestore"] = f"error: {str(e)[:100]}"
+        status["status"] = "degraded"
+
+    # Memory usage
+    try:
+        import resource
+        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
+        status["memory_mb"] = round(mem_mb, 1)
+    except Exception:
+        pass
+
+    # Crawl lock status
+    locked = not crawl_lock.acquire(blocking=False)
+    if not locked:
+        crawl_lock.release()
+    status["crawl_locked"] = locked
+
+    # In-memory state
+    status["cached_sessions"] = len(_session_cache) if '_session_cache' in dir() else 0
+    status["cached_xlsx"] = len(generated_xlsx_per_user)
+
+    code = 200 if status["status"] == "ok" else 503
+    return jsonify(status), code
+
+
+def log_error_to_firestore(error_type, message, details=None):
+    """Log errors to Firestore for visibility without Sentry."""
+    try:
+        db = _get_db_safe()
+        if not db:
+            return
+        db.collection("curator").document("_errors").collection("log").add({
+            "type": error_type,
+            "message": str(message)[:500],
+            "details": str(details)[:1000] if details else "",
+            "timestamp": firestore_timestamp(),
+            "user": get_user_id() if flask_session.get("logged_in") else "anonymous",
+        })
+    except Exception:
+        pass  # Don't let error logging cause more errors
+
+
 @app.route("/login")
 def login_page():
     if flask_session.get("logged_in"):
@@ -1760,44 +1942,11 @@ def login_action():
     username = data.get("username", "").strip()
     password = data.get("password", "")
 
-    if username in USERS and USERS[username] == password:
+    if username in USERS and check_password_hash(USERS[username], password):
         flask_session["logged_in"] = True
         flask_session["username"] = username
-        # Auto-reset: each login starts completely fresh
-        uid = username
-        # Try to find active country from Firestore (flask session doesn't have it yet)
-        country = ""
-        try:
-            fs = load_country_firestore()
-            if fs and isinstance(fs, dict):
-                country = fs.get(uid, "")
-            elif fs and isinstance(fs, str):
-                country = fs
-        except Exception:
-            pass
-        if country:
-            clear_curation_session(country, uid)
-            # Clear brands
-            brands_path = _brands_file_for_user(country, uid)
-            if os.path.exists(brands_path):
-                os.remove(brands_path)
-            save_brands_firestore([], f"{uid}_{country}")
-        # Clear country → forces country selection
-        flask_session["active_country"] = ""
-        try:
-            save_country_firestore({uid: ""})
-        except Exception:
-            pass
-        # Clear generated xlsx and previous upload
-        for fpath in [os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx"),
-                      os.path.join(DATA_DIR, f"previous_upload_{uid}.xlsx")]:
-            if os.path.exists(fpath):
-                os.remove(fpath)
-        generated_xlsx_per_user.pop(uid, None)
-        # Clear all brand files for this user across all countries
-        import glob as glob_mod
-        for f in glob_mod.glob(os.path.join(DATA_DIR, f"brands_{uid}_*.json")):
-            os.remove(f)
+        # Clear in-memory session cache so fresh data is loaded
+        invalidate_session_cache(username)
         return jsonify({"status": "ok"})
     return jsonify({"status": "error", "error": "Usuario o contraseña incorrectos"}), 401
 
@@ -2393,6 +2542,8 @@ def cancel_curation():
 def clear_curation_session(country=None, user_id=None):
     """Clear all curation data — session, cache, crawl state (local + Firestore)"""
     uid = user_id or get_user_id()
+    # Clear in-memory cache
+    invalidate_session_cache(uid)
     # Clear local per-user session file
     user_session = _session_file_for_user(uid)
     if os.path.exists(user_session):

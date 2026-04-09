@@ -248,6 +248,84 @@
         let isFetchingBatch = false;
         let actionCooldown = false; // 0.5s cooldown between actions
 
+        // ─── Offline-safe action queue ───────────────────────────────
+        let actionQueue = [];       // [{action, product}] — pending saves
+        let isSyncing = false;
+        let failedSyncCount = 0;
+
+        function queueAction(action, prod) {
+            actionQueue.push({ action, product: prod });
+            // Try to save in localStorage as backup
+            try { localStorage.setItem('moder_action_queue', JSON.stringify(actionQueue)); } catch(e) {}
+            syncQueue();
+        }
+
+        function syncQueue() {
+            if (isSyncing || actionQueue.length === 0) return;
+            isSyncing = true;
+            const item = actionQueue[0];
+            fetch('/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(item)
+            })
+            .then(r => {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(() => {
+                actionQueue.shift(); // Remove successfully saved action
+                failedSyncCount = 0;
+                try { localStorage.setItem('moder_action_queue', JSON.stringify(actionQueue)); } catch(e) {}
+                isSyncing = false;
+                updateSyncStatus();
+                syncQueue(); // Process next in queue
+            })
+            .catch(() => {
+                failedSyncCount++;
+                isSyncing = false;
+                updateSyncStatus();
+                // Retry with exponential backoff (max 30s)
+                const delay = Math.min(1000 * Math.pow(2, failedSyncCount), 30000);
+                setTimeout(syncQueue, delay);
+            });
+        }
+
+        function updateSyncStatus() {
+            let el = document.getElementById('syncStatus');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'syncStatus';
+                el.style.cssText = 'position:fixed;top:56px;left:0;right:0;text-align:center;font-size:11px;padding:4px;z-index:101;transition:opacity 0.3s;';
+                document.body.appendChild(el);
+            }
+            if (actionQueue.length > 0 && failedSyncCount > 0) {
+                el.style.background = '#fff3e0';
+                el.style.color = '#e65100';
+                el.textContent = `⚠ ${actionQueue.length} acción(es) pendiente(s) — reintentando...`;
+                el.style.opacity = '1';
+            } else if (actionQueue.length > 0) {
+                el.style.background = '#e3f2fd';
+                el.style.color = '#1565c0';
+                el.textContent = `Guardando ${actionQueue.length} acción(es)...`;
+                el.style.opacity = '1';
+            } else {
+                el.style.opacity = '0';
+            }
+        }
+
+        // Restore pending actions from localStorage on page load
+        try {
+            const saved = localStorage.getItem('moder_action_queue');
+            if (saved) {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    actionQueue = parsed;
+                    syncQueue();
+                }
+            }
+        } catch(e) {}
+
         // Prefetch next batch of products (aggressive — keep 20+ products ready)
         function prefetchBatch() {
             if (isFetchingBatch || productQueue.length >= 20) {
@@ -387,16 +465,9 @@
             // Animate out
             card.classList.add(slideDir);
 
-            // Fire action save (fire-and-forget with retry)
-            pendingAction = fetch('/action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: serverAction, product: product })
-            }).catch(() => fetch('/action', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: serverAction, product: product })
-            }).catch(() => {}));
+            // Queue action for reliable delivery (survives bad connectivity)
+            queueAction(serverAction, product);
+            pendingAction = Promise.resolve(); // For finish flow compatibility
 
             if (action === 'accept' || action === 'trend') accepted++;
             else rejected++;

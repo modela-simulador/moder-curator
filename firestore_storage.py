@@ -278,18 +278,31 @@ def load_cache_firestore(country):
 # ── Clear ────────────────────────────────────────────────────────────────
 
 def clear_session_firestore(user_id="default"):
-    """Limpia sesión de curación — batch delete para velocidad."""
+    """Limpia sesión de curación — query-based delete (no fixed ranges)."""
     db = _get_db()
     if not db:
         return False
     try:
-        # Batch delete — much faster than individual deletes (1 round-trip vs 50+)
-        batch = db.batch()
-        batch.delete(db.collection("curator").document(f"session_{user_id}"))
-        for prefix in [f"{user_id}_accepted_", f"{user_id}_rejected_", f"{user_id}_rows_"]:
-            for i in range(15):  # Max 15 chunks per type (covers 1500 accepted, 7500 rejected)
-                batch.delete(db.collection("curator").document(f"{prefix}{i}"))
-        batch.commit()  # Single round-trip to Firestore
+        col = db.collection("curator")
+        # Find ALL documents belonging to this user by prefix query
+        prefixes = [f"session_{user_id}", f"{user_id}_accepted_",
+                    f"{user_id}_rejected_", f"{user_id}_rows_"]
+        docs_to_delete = []
+        for doc in col.stream():
+            doc_id = doc.id
+            for prefix in prefixes:
+                if doc_id == prefix or doc_id.startswith(prefix):
+                    docs_to_delete.append(doc.reference)
+                    break
+        if not docs_to_delete:
+            return True
+        # Batch delete in groups of 500 (Firestore batch limit)
+        for i in range(0, len(docs_to_delete), 500):
+            batch = db.batch()
+            for ref in docs_to_delete[i:i+500]:
+                batch.delete(ref)
+            batch.commit()
+        print(f"Cleared {len(docs_to_delete)} Firestore docs for user {user_id}")
         return True
     except Exception as e:
         print(f"Error clearing session Firestore: {e}")
