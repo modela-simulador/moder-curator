@@ -81,6 +81,13 @@ def get_user_id():
     """Get current user ID from Flask session — used to isolate curation sessions"""
     return flask_session.get("username", "default")
 
+def _safe_get_user_id():
+    """Get user ID without crashing outside request context (for background threads)."""
+    try:
+        return flask_session.get("username", "anonymous")
+    except RuntimeError:
+        return "anonymous"
+
 def get_csrf_token():
     """Generate a CSRF token tied to the session."""
     if "csrf_token" not in flask_session:
@@ -1590,7 +1597,7 @@ def _get_cached_products(country):
     return None
 
 
-def crawl_all(brands=None, cache_file=None, progress=None, country=None):
+def crawl_all(brands=None, cache_file=None, progress=None, country=None, user_id=None):
     """Crawl all brands, deduplicate, and cache results.
 
     Uses a global dict for progress (read by polling endpoint).
@@ -1612,7 +1619,7 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
         "status": "running", "message": "Iniciando...",
         "brand_idx": 0, "brand_total": len(brands),
         "products_found": 0, "current_brand": "", "done": False,
-        "failed_brands": [], "user": get_user_id()
+        "failed_brands": [], "user": user_id or "unknown"
     })
 
     # Load previous cache to preserve data for brands that fail
@@ -1753,9 +1760,8 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
     try:
         db = _get_db_safe()
         if db:
-            uid = get_user_id()
             db.collection("curator").document("_crawl_log").collection("runs").add({
-                "user": uid,
+                "user": user_id or "unknown",
                 "country": country or "",
                 "brands_total": len(brands),
                 "brands_failed": crawl_progress.get("failed_brands", []),
@@ -2024,7 +2030,7 @@ def log_error_to_firestore(error_type, message, details=None):
             "message": str(message)[:500],
             "details": str(details)[:1000] if details else "",
             "timestamp": firestore_timestamp(),
-            "user": get_user_id() if flask_session.get("logged_in") else "anonymous",
+            "user": _safe_get_user_id(),
         })
     except Exception:
         pass  # Don't let error logging cause more errors
@@ -2289,7 +2295,7 @@ def crawl():
     def run_crawl():
         try:
             print(f"🚀 Starting crawl for {len(active_brands)} brands in {country} (user: {uid})...")
-            products = crawl_all(active_brands, cache_file=cache_file, progress=progress, country=country)
+            products = crawl_all(active_brands, cache_file=cache_file, progress=progress, country=country, user_id=uid)
             print(f"✅ Crawl complete: {len(products)} products from {len(active_brands)} brands")
         except Exception as e:
             print(f"❌ CRAWL ERROR: {e}")
