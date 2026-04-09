@@ -360,8 +360,7 @@ def is_crawl_allowed(url, user_agent="*"):
 # ─── Session state (with in-memory cache) ────────────────────────────────
 
 _session_cache = {}       # {uid: session_dict} — avoids re-reading Firestore on every action
-_session_dirty = set()    # UIDs with unsaved Firestore changes
-_session_save_lock = threading.Lock()
+_session_lock = threading.Lock()  # Protects _session_cache read-modify-write + Firestore writes
 
 def _session_file_for_user(user_id=None):
     """Get session file path for a specific user"""
@@ -370,15 +369,11 @@ def _session_file_for_user(user_id=None):
 
 def load_session(user_id=None):
     uid = user_id or get_user_id()
-    # In-memory cache hit — instant
-    if uid in _session_cache:
-        return _session_cache[uid]
-    # Intentar Firestore primero (con user prefix)
-    fs_data = load_session_firestore(uid)
-    if fs_data:
-        _session_cache[uid] = fs_data
-        return fs_data
-    # Fallback a archivo local (per-user)
+    with _session_lock:
+        # In-memory cache hit — instant
+        if uid in _session_cache:
+            return _session_cache[uid]
+    # Local file first (most recent writes go here), then Firestore
     path = _session_file_for_user(uid)
     if os.path.exists(path):
         try:
@@ -386,30 +381,27 @@ def load_session(user_id=None):
                 content = f.read().strip()
                 if content:
                     data = json.loads(content)
-                    _session_cache[uid] = data
+                    with _session_lock:
+                        _session_cache[uid] = data
                     return data
         except (json.JSONDecodeError, IOError):
             pass
-    # Legacy fallback (migrar si existe)
-    if os.path.exists(SESSION_FILE):
-        try:
-            with open(SESSION_FILE) as f:
-                content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    save_session(data, uid)
-                    return data
-        except Exception:
-            pass
+    # Firestore fallback (may have data from before last redeploy)
+    fs_data = load_session_firestore(uid)
+    if fs_data:
+        with _session_lock:
+            _session_cache[uid] = fs_data
+        return fs_data
     default = {"accepted": [], "rejected": [], "current_index": 0, "previous_urls": []}
-    _session_cache[uid] = default
+    with _session_lock:
+        _session_cache[uid] = default
     return default
 
 def save_session(session, user_id=None):
     uid = user_id or get_user_id()
-    # Update in-memory cache
-    _session_cache[uid] = session
-    # Guardar en archivo local per-user (fast, synchronous)
+    with _session_lock:
+        _session_cache[uid] = session
+    # Guardar en archivo local per-user (fast, synchronous — source of truth)
     try:
         path = _session_file_for_user(uid)
         tmp_path = path + ".tmp"
@@ -420,25 +412,21 @@ def save_session(session, user_id=None):
         os.replace(tmp_path, path)
     except Exception as e:
         print(f"⚠️ Error guardando session local: {e}")
-    # Firestore write — deferred to background thread to avoid blocking the UI
-    _session_dirty.add(uid)
+    # Firestore write — deferred to background thread
+    import copy
+    session_copy = copy.deepcopy(session)  # Snapshot to avoid mutation during write
     def _write_firestore():
-        with _session_save_lock:
-            if uid not in _session_dirty:
-                return  # Another thread already wrote it
-            _session_dirty.discard(uid)
-            try:
-                save_session_firestore(session, uid)
-            except Exception as e:
-                print(f"⚠️ Error guardando session en Firestore: {e}")
-                _session_dirty.add(uid)  # Mark as dirty for next save
+        try:
+            save_session_firestore(session_copy, uid)
+        except Exception as e:
+            print(f"⚠️ Error guardando session en Firestore: {e}")
     threading.Thread(target=_write_firestore, daemon=True).start()
 
 def invalidate_session_cache(user_id=None):
     """Clear session cache for a user (e.g., after reset)"""
     uid = user_id or get_user_id()
-    _session_cache.pop(uid, None)
-    _session_dirty.discard(uid)
+    with _session_lock:
+        _session_cache.pop(uid, None)
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
@@ -611,7 +599,9 @@ def _fetch_woo_sitemap_urls(base_url):
             resp = requests.get(f"{base_url}{path}", headers=HEADERS, timeout=15)
             if resp.status_code != 200:
                 continue
-            root = ET.fromstring(resp.content)
+            root = safe_parse_xml(resp.content)
+            if root is None:
+                break
             ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
             for url_el in root.findall('s:url', ns):
                 loc = url_el.find('s:loc', ns)
@@ -780,7 +770,7 @@ def _scrape_single_product_page(url, brand):
                         or soup.find("form", class_="product-form"))
         og_type = soup.find("meta", property="og:type")
         is_og_product = og_type and og_type.get("content", "").lower() in ("product", "og:product")
-        has_product_schema = bool(soup.find(attrs={"itemtype": lambda v: v and "Product" in v})) if True else False
+        has_product_schema = bool(soup.find(attrs={"itemtype": lambda v: v and "Product" in v}))
 
         if not has_price and not has_cart and not is_og_product and not has_product_schema:
             return None
@@ -1087,7 +1077,9 @@ def _fetch_generic_sitemap_urls(base_url, domain=""):
             if resp.status_code != 200:
                 continue
 
-            root = ET.fromstring(resp.content)
+            root = safe_parse_xml(resp.content)
+            if root is None:
+                break
 
             # Check if it's a sitemap index (contains <sitemap> elements)
             sub_sitemaps = root.findall('s:sitemap', ns)
@@ -1100,7 +1092,9 @@ def _fetch_generic_sitemap_urls(base_url, domain=""):
                             sm_resp = requests.get(loc.text, headers=HEADERS, timeout=15)
                             if sm_resp.status_code != 200:
                                 continue
-                            sm_root = ET.fromstring(sm_resp.content)
+                            sm_root = safe_parse_xml(sm_resp.content)
+                            if sm_root is None:
+                                continue
                             for url_el in sm_root.findall('s:url', ns):
                                 loc2 = url_el.find('s:loc', ns)
                                 if loc2 is not None:
@@ -1168,7 +1162,9 @@ def crawl_jumpseller(brand, progress_callback=None):
     try:
         resp = requests.get(f"{base_url}/sitemap.xml", headers=HEADERS, timeout=15)
         if resp.status_code == 200:
-            root = ET.fromstring(resp.content)
+            root = safe_parse_xml(resp.content)
+            if root is None:
+                return []
             ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
             for url_el in root.findall('s:url', ns):
                 loc = url_el.find('s:loc', ns)
@@ -1433,7 +1429,9 @@ def _fetch_shopify_sitemap_urls(base_url):
                 resp = requests.get(sm_url, headers=HEADERS, timeout=15)
                 if resp.status_code != 200:
                     continue
-                sm_root = ET.fromstring(resp.content)
+                sm_root = safe_parse_xml(resp.content)
+                if sm_root is None:
+                    continue
                 for url_el in sm_root.findall('s:url', ns):
                     loc = url_el.find('s:loc', ns)
                     if loc is not None and '/products/' in loc.text:
@@ -1568,7 +1566,9 @@ crawl_lock_time = 0  # Timestamp when lock was acquired (auto-expire after 10 mi
 crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 
 # In-memory buffer for the last generated spreadsheet (survives ephemeral filesystem)
-generated_xlsx_per_user = {}  # {user_id: BytesIO buffer}
+generated_xlsx_per_user = {}  # {user_id: BytesIO buffer} — max 10 entries
+_XLSX_CACHE_MAX = 10
+_last_cleanup_time = 0  # Throttle health check cleanup to once per hour
 _products_cache = {}  # {cache_file_path: (mtime, products_list)} — max 5 entries
 _PRODUCTS_CACHE_MAX = 5
 
@@ -1997,23 +1997,24 @@ def health_check():
     status["cached_sessions"] = len(_session_cache)
     status["cached_xlsx"] = len(generated_xlsx_per_user)
 
-    # Periodic cleanup: evict stale local files older than 7 days
-    try:
-        import glob as _glob
-        cutoff = _t.time() - (7 * 86400)
-        stale = 0
-        for f in _glob.glob(os.path.join(DATA_DIR, "session_*.json")):
-            if os.path.getmtime(f) < cutoff:
-                os.remove(f)
-                stale += 1
-        for f in _glob.glob(os.path.join(DATA_DIR, "crawl_cache_*.json")):
-            if os.path.getmtime(f) < cutoff:
-                os.remove(f)
-                stale += 1
-        if stale:
-            status["stale_files_cleaned"] = stale
-    except Exception:
-        pass
+    # Periodic cleanup: evict stale local files older than 7 days (run max once per hour)
+    global _last_cleanup_time
+    now = _t.time()
+    if now - _last_cleanup_time > 3600:
+        _last_cleanup_time = now
+        try:
+            import glob as _glob
+            cutoff = now - (7 * 86400)
+            stale = 0
+            for pattern in ["session_*.json", "crawl_cache_*.json"]:
+                for f in _glob.glob(os.path.join(DATA_DIR, pattern)):
+                    if os.path.getmtime(f) < cutoff:
+                        os.remove(f)
+                        stale += 1
+            if stale:
+                status["stale_files_cleaned"] = stale
+        except Exception:
+            pass
 
     code = 200 if status["status"] == "ok" else 503
     return jsonify(status), code
@@ -2261,7 +2262,7 @@ def crawl():
     if not active_brands:
         return jsonify({"error": "No brands selected"}), 400
 
-    # Prevent concurrent crawls — auto-expire lock after 10 minutes
+    # Prevent concurrent crawls — auto-expire lock after 5 minutes
     import time as _time
     global crawl_lock_time
     if not crawl_lock.acquire(blocking=False):
@@ -2352,7 +2353,7 @@ def upload_previous():
     file.seek(0)
     if size > 10 * 1024 * 1024:
         return jsonify({"error": "Archivo demasiado grande (máx 10MB)"}), 400
-    if not file.filename.endswith(('.xlsx', '.xls')):
+    if not file.filename.endswith('.xlsx'):
         return jsonify({"error": "Solo se aceptan archivos .xlsx"}), 400
 
     uid = get_user_id()
@@ -2585,6 +2586,9 @@ def action():
             return jsonify({"status": "error", "error": "No hay productos aceptados. Acepta al menos uno antes de finalizar."}), 400
         try:
             _, xlsx_buffer = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+            if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
+                oldest = next(iter(generated_xlsx_per_user))
+                del generated_xlsx_per_user[oldest]
             generated_xlsx_per_user[uid] = xlsx_buffer
             print(f"✅ Planilla generada: {len(session['accepted'])} productos → {output_path}")
         except Exception as e:
@@ -2638,6 +2642,9 @@ def download():
         try:
             previous_rows = session.get("previous_rows", [])
             _, xlsx_buffer = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
+            if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
+                oldest = next(iter(generated_xlsx_per_user))
+                del generated_xlsx_per_user[oldest]
             generated_xlsx_per_user[uid] = xlsx_buffer
             xlsx_buffer.seek(0)
             return send_file(

@@ -607,11 +607,19 @@
             lastAction = null;
             document.getElementById('undoBtn').style.display = 'none';
 
-            // Undo on server
+            // First: remove from local action queue if not yet synced
+            const url = la.product.product_url;
+            const queueIdx = actionQueue.findIndex(q => q.product && q.product.product_url === url);
+            if (queueIdx >= 0) {
+                actionQueue.splice(queueIdx, 1);
+                try { localStorage.setItem('moder_action_queue', JSON.stringify(actionQueue)); } catch(e) {}
+            }
+
+            // Then: undo on server (in case it was already synced)
             fetch('/undo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: la.action, product_url: la.product.product_url })
+                body: JSON.stringify({ action: la.action, product_url: url })
             });
 
             // Undo counts
@@ -624,6 +632,7 @@
 
             // Put undone product back at front of queue
             productQueue.unshift(la.product);
+            updateSyncStatus();
         }
 
         // Keyboard shortcuts

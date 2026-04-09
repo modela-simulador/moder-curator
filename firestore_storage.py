@@ -74,38 +74,32 @@ def save_session_firestore(session_data, user_id="default"):
         }
         db.collection("curator").document(f"session_{user_id}").set(data)
 
-        # Guardar accepted en chunks (sin límite de 500)
-        num_acc_chunks = max((len(accepted) + 99) // 100, 1)
-        for i in range(0, max(len(accepted), 1), 100):
-            chunk = accepted[i:i+100]
-            db.collection("curator").document(f"{user_id}_accepted_{i//100}").set({
-                "products": chunk, "chunk_index": i//100,
-            })
-        # Limpiar chunks sobrantes (start from first unused chunk index)
-        for i in range(num_acc_chunks, num_acc_chunks + 15):
-            try: db.collection("curator").document(f"{user_id}_accepted_{i}").delete()
-            except Exception: pass
-
-        # Guardar rejected en chunks
-        num_rej_chunks = max((len(rejected) + 499) // 500, 1)
-        for i in range(0, max(len(rejected), 1), 500):
-            chunk = rejected[i:i+500]
-            db.collection("curator").document(f"{user_id}_rejected_{i//500}").set({
-                "urls": chunk, "chunk_index": i//500,
-            })
-        # Cleanup orphaned rejected chunks
-        for i in range(num_rej_chunks, num_rej_chunks + 10):
-            try: db.collection("curator").document(f"{user_id}_rejected_{i}").delete()
-            except Exception: pass
-
-        # Guardar previous_rows en chunks
-        prev_rows = session_data.get("previous_rows", [])
-        if prev_rows:
-            for i in range(0, len(prev_rows), 200):
-                chunk = prev_rows[i:i+200]
-                db.collection("curator").document(f"{user_id}_rows_{i//200}").set({
-                    "rows": chunk, "chunk_index": i//200,
+        # Helper: write chunks and clean orphans up to a safe max index
+        def _write_chunks(prefix, items, chunk_size, key="products"):
+            num_chunks = (len(items) + chunk_size - 1) // chunk_size if items else 0
+            written_indices = set()
+            for i in range(0, max(len(items), 1), chunk_size):
+                idx = i // chunk_size
+                doc_id = f"{user_id}_{prefix}_{idx}"
+                db.collection("curator").document(doc_id).set({
+                    key: items[i:i + chunk_size], "chunk_index": idx,
                 })
+                written_indices.add(idx)
+            # Clean orphans: check indices beyond what we wrote, up to 100
+            # This handles cases where the list shrunk from a large to small size
+            for idx in range(num_chunks, num_chunks + 100):
+                doc_id = f"{user_id}_{prefix}_{idx}"
+                doc = db.collection("curator").document(doc_id).get()
+                if doc.exists:
+                    doc.reference.delete()
+                else:
+                    break  # No more orphans beyond this point
+
+        _write_chunks("accepted", accepted, 100, "products")
+        _write_chunks("rejected", rejected, 500, "urls")
+
+        prev_rows = session_data.get("previous_rows", [])
+        _write_chunks("rows", prev_rows, 200, "rows")
         return True
     except Exception as e:
         print(f"Error guardando sesión en Firestore: {e}")
@@ -290,31 +284,34 @@ def load_cache_firestore(country):
 # ── Clear ────────────────────────────────────────────────────────────────
 
 def clear_session_firestore(user_id="default"):
-    """Limpia sesión de curación — query-based delete (no fixed ranges)."""
+    """Limpia sesión de curación — delete by known doc IDs (no collection scan)."""
     db = _get_db()
     if not db:
         return False
     try:
         col = db.collection("curator")
-        # Find ALL documents belonging to this user by prefix query
-        prefixes = [f"session_{user_id}", f"{user_id}_accepted_",
-                    f"{user_id}_rejected_", f"{user_id}_rows_"]
-        docs_to_delete = []
-        for doc in col.stream():
-            doc_id = doc.id
-            for prefix in prefixes:
-                if doc_id == prefix or doc_id.startswith(prefix):
-                    docs_to_delete.append(doc.reference)
-                    break
-        if not docs_to_delete:
-            return True
-        # Batch delete in groups of 500 (Firestore batch limit)
-        for i in range(0, len(docs_to_delete), 500):
-            batch = db.batch()
-            for ref in docs_to_delete[i:i+500]:
-                batch.delete(ref)
-            batch.commit()
-        print(f"Cleared {len(docs_to_delete)} Firestore docs for user {user_id}")
+        batch = db.batch()
+        count = 0
+        # Delete main session doc
+        batch.delete(col.document(f"session_{user_id}"))
+        count += 1
+        # Delete chunk docs by index (check existence, stop at first gap)
+        for prefix in ["accepted", "rejected", "rows"]:
+            for idx in range(100):  # Max 100 chunks per type
+                doc_id = f"{user_id}_{prefix}_{idx}"
+                doc = col.document(doc_id).get()
+                if doc.exists:
+                    batch.delete(col.document(doc_id))
+                    count += 1
+                    if count >= 490:  # Flush batch before hitting 500 limit
+                        batch.commit()
+                        batch = db.batch()
+                        count = 0
+                else:
+                    break  # No more chunks
+        # Also delete hidden brands doc
+        batch.delete(col.document(f"hidden_{user_id}"))
+        batch.commit()
         return True
     except Exception as e:
         print(f"Error clearing session Firestore: {e}")
