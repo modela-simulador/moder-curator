@@ -21,7 +21,7 @@
         .progress-bar { position: fixed; top: 53px; left: 0; right: 0; height: 3px; background: #eee; z-index: 100; }
         .progress-fill { height: 100%; background: #1c1c1e; transition: width 0.3s; }
 
-        .container { max-width: 500px; margin: 0 auto; padding: 80px 16px 260px; }
+        .container { max-width: 500px; margin: 0 auto; padding: 80px 16px 180px; }
 
         .product-card { background: white; border-radius: 20px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
         .product-image-wrap { position: relative; width: 100%; aspect-ratio: 2/3; overflow: hidden; background: #f5f5f5; }
@@ -89,7 +89,7 @@
             .header-stats { gap: 8px; font-size: 11px; }
             .header-stats span { padding: 3px 8px; }
 
-            .container { padding-left: 0; padding-right: 0; padding-bottom: 280px; max-width: 100%; }
+            .container { padding-left: 0; padding-right: 0; padding-bottom: 180px; max-width: 100%; }
 
             .product-card { border-radius: 0; box-shadow: none; border-bottom: 1px solid #eee; }
             .product-image-wrap { aspect-ratio: 2/3; }
@@ -117,7 +117,11 @@
 </head>
 <body>
     <div class="header">
-        <div class="header-logo">MODÈR</div>
+        <div style="display:flex;align-items:center;gap:12px">
+            <div class="header-logo">MODÈR</div>
+            <button onclick="cancelAndReset()" style="background:none;border:none;color:#c62828;font-size:11px;cursor:pointer;padding:4px 8px;">✕ Cancelar</button>
+            <button onclick="doAction('finish')" style="background:none;border:1px solid #1c1c1e;color:#1c1c1e;font-size:11px;cursor:pointer;padding:4px 10px;border-radius:8px;font-weight:600;">■ Generar planilla</button>
+        </div>
         <div class="header-stats">
             <span class="accepted" id="acceptedCount">✓ {{ accepted_count }}</span>
             <span class="rejected" id="rejectedCount">✗ {{ rejected_count }}</span>
@@ -216,19 +220,9 @@
                 ✓ Agregar <span class="kbd">→</span>
             </button>
         </div>
-        <div class="action-row" style="margin-top: 8px;">
-            <button class="btn btn-finish" id="skipBrandBtn" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none;">
+        <div class="action-row" style="margin-top: 6px;">
+            <button class="btn" id="skipBrandBtn" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none; padding:12px; font-size:13px;">
                 ⏭ Saltar marca ({{ product.brand }})
-            </button>
-        </div>
-        <div class="action-row" style="margin-top: 6px;">
-            <button class="btn btn-finish" onclick="doAction('finish')">
-                ■ Terminar aquí y generar planilla
-            </button>
-        </div>
-        <div class="action-row" style="margin-top: 6px;">
-            <button class="btn" onclick="cancelAndReset()" style="background:transparent; color:#c62828; font-size:12px; border:1px solid #eee;">
-                ✕ Cancelar curación y volver al inicio
             </button>
         </div>
     </div>
