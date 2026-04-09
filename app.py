@@ -2050,7 +2050,7 @@ def curate_next():
                         "total": len(products)})
 
     # Return BATCH of up to 5 products for instant client-side switching
-    batch_size = min(10, len(remaining))
+    batch_size = min(15, len(remaining))
     batch = remaining[:batch_size]
     prev_count = len(session.get("previous_rows", []))
     for p in batch:
