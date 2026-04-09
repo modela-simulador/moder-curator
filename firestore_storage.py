@@ -244,7 +244,15 @@ def save_cache_firestore(products, country):
             old.reference.delete()
 
         for i in range(0, len(products), 100):
-            chunk = products[i:i+100]
+            # Trim products to avoid 1MB Firestore document limit
+            chunk = []
+            for p in products[i:i+100]:
+                trimmed = dict(p)
+                if trimmed.get("description") and len(str(trimmed["description"])) > 300:
+                    trimmed["description"] = str(trimmed["description"])[:300] + "..."
+                if trimmed.get("all_images") and len(trimmed["all_images"]) > 5:
+                    trimmed["all_images"] = trimmed["all_images"][:5]
+                chunk.append(trimmed)
             db.collection("curator").document(f"cache_{country}").collection("chunks").document(f"chunk_{i//100}").set({
                 "products": chunk,
                 "index": i//100,

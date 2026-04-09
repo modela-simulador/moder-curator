@@ -233,6 +233,9 @@
             </button>
         </div>
         <div class="action-row" style="margin-top: 6px;">
+            <button class="btn" id="undoBtn" onclick="undoLastAction()" style="background:white; color:#999; border:1px solid #eee; padding:10px; font-size:12px; flex:0 0 auto; display:none;">
+                ↩ Deshacer
+            </button>
             <button class="btn" id="skipBrandBtn" onclick="doAction('skip_brand')" style="background:#f5f5f5; color:#666; border:none; padding:12px; font-size:13px;">
                 ⏭ Saltar marca ({{ product.brand }})
             </button>
@@ -247,6 +250,7 @@
         let productQueue = [];    // Pre-fetched products for instant switching
         let isFetchingBatch = false;
         let actionCooldown = false; // 0.5s cooldown between actions
+        let lastAction = null;     // {action, product} for undo
 
         // ─── Offline-safe action queue ───────────────────────────────
         let actionQueue = [];       // [{action, product}] — pending saves
@@ -465,6 +469,11 @@
             // Animate out
             card.classList.add(slideDir);
 
+            // Save for undo
+            lastAction = { action: serverAction, product: Object.assign({}, product) };
+            const undoBtn = document.getElementById('undoBtn');
+            if (undoBtn) undoBtn.style.display = '';
+
             // Queue action for reliable delivery (survives bad connectivity)
             queueAction(serverAction, product);
             pendingAction = Promise.resolve(); // For finish flow compatibility
@@ -592,11 +601,37 @@
                 .then(() => { window.location.href = '/'; });
         }
 
+        function undoLastAction() {
+            if (!lastAction) return;
+            const la = lastAction;
+            lastAction = null;
+            document.getElementById('undoBtn').style.display = 'none';
+
+            // Undo on server
+            fetch('/undo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: la.action, product_url: la.product.product_url })
+            });
+
+            // Undo counts
+            if (la.action === 'accept' || la.action === 'trend') accepted--;
+            else rejected--;
+            const accEl = document.getElementById('acceptedCount');
+            if (accEl) accEl.textContent = '✓ ' + accepted;
+            const rejEl = document.getElementById('rejectedCount');
+            if (rejEl) rejEl.textContent = '✗ ' + rejected;
+
+            // Put undone product back at front of queue
+            productQueue.unshift(la.product);
+        }
+
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'ArrowRight' || e.key === 'a') doAction('accept');
             if (e.key === 'ArrowLeft' || e.key === 'r') doAction('reject');
             if (e.key === 'ArrowUp' || e.key === 't') doAction('trend');
+            if (e.key === 'z' && (e.ctrlKey || e.metaKey)) undoLastAction();
             if (e.key === 'Escape') doAction('finish');
         });
     </script>

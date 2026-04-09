@@ -67,6 +67,7 @@ USERS = _load_users()
 
 from functools import wraps
 from flask import session as flask_session
+import hmac, hashlib
 
 def login_required(f):
     @wraps(f)
@@ -79,6 +80,37 @@ def login_required(f):
 def get_user_id():
     """Get current user ID from Flask session — used to isolate curation sessions"""
     return flask_session.get("username", "default")
+
+def get_csrf_token():
+    """Generate a CSRF token tied to the session."""
+    if "csrf_token" not in flask_session:
+        import secrets
+        flask_session["csrf_token"] = secrets.token_hex(16)
+    return flask_session["csrf_token"]
+
+@app.context_processor
+def inject_csrf():
+    """Make csrf_token available in all templates."""
+    return {"csrf_token": get_csrf_token}
+
+@app.before_request
+def check_csrf():
+    """Verify CSRF token on state-changing requests."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    # Skip CSRF for login (no session yet) and health check
+    if request.path in ("/login", "/health"):
+        return
+    # Check token in header or JSON body
+    token = request.headers.get("X-CSRF-Token", "")
+    if not token:
+        data = request.get_json(silent=True) or {}
+        token = data.get("_csrf", "")
+    expected = flask_session.get("csrf_token", "")
+    if not expected or not token:
+        return  # Graceful: don't block if no CSRF yet (backwards compat)
+    if not hmac.compare_digest(token, expected):
+        return jsonify({"error": "CSRF token invalid"}), 403
 
 # ─── Config ──────────────────────────────────────────────────────────────
 # Persistent disk on Render (survives redeploys), fallback to local dir
@@ -403,12 +435,28 @@ def invalidate_session_cache(user_id=None):
 
 # ─── Crawling ────────────────────────────────────────────────────────────
 
+MAX_XML_SIZE = 5 * 1024 * 1024  # 5MB max for sitemap XML
+
+def safe_parse_xml(content):
+    """Parse XML with size limit to prevent memory bombs."""
+    import xml.etree.ElementTree as ET
+    if len(content) > MAX_XML_SIZE:
+        print(f"  ⚠ XML too large ({len(content) / 1024 / 1024:.1f}MB), skipping")
+        return None
+    try:
+        return ET.fromstring(content)
+    except ET.ParseError:
+        return None
+
 def fetch_with_retry(url, max_retries=3, base_delay=2.0):
     """Fetch URL with exponential backoff retries"""
     for attempt in range(max_retries):
         try:
             resp = requests.get(url, headers=HEADERS, timeout=45, allow_redirects=True)
             if resp.status_code == 200:
+                # Fix encoding for Latin American sites
+                if resp.encoding and resp.encoding.lower() == 'iso-8859-1':
+                    resp.encoding = resp.apparent_encoding
                 return resp
             elif resp.status_code in (429, 500, 502, 503):
                 # Rate limited or overloaded — wait longer
@@ -1206,7 +1254,25 @@ def crawl_brand(brand, progress_callback=None):
     }
 
     crawler = crawlers.get(platform, crawl_html_scrape)
-    return crawler(brand, progress_callback)
+    products = crawler(brand, progress_callback)
+
+    # Detect JS-only sites: got 0 products but page loaded OK
+    if not products and platform == "html_scrape":
+        try:
+            resp = requests.get(brand["url"], headers=HEADERS, timeout=15)
+            body = resp.text.lower()
+            js_signals = ["__next", "react-root", "nuxt", "vue-app", "ng-app",
+                          "window.__initial", "hydrate", "data-reactroot"]
+            if any(sig in body for sig in js_signals):
+                msg = f"⚠ {brand['name']}: sitio JavaScript (SPA) — no se puede scrapear sin navegador"
+                if progress_callback:
+                    progress_callback(msg)
+                print(f"  🔧 {brand['name']}: detected JS-only site (SPA)")
+                log_error_to_firestore("js_only_site", msg, {"domain": brand.get("domain", "")})
+        except Exception:
+            pass
+
+    return products
 
 
 def crawl_shopify(brand, progress_callback=None):
@@ -1221,7 +1287,8 @@ def crawl_shopify(brand, progress_callback=None):
 
     # ── PHASE 1: Shopify JSON API ───────────────────────────────────────
     page = 1
-    while True:
+    MAX_SHOPIFY_PAGES = 50  # Cap at 12,500 products
+    while page <= MAX_SHOPIFY_PAGES:
         url = f"{base_url}/products.json?limit=250&page={page}"
         log(f"API página {page} de {brand['name']}... ({len(products)} productos)")
 
@@ -1476,13 +1543,18 @@ def deduplicate_products(products):
 
 
 # Global progress state — simple dict, read by polling endpoint
-_default_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0,
+_default_progress = {"status": "idle", "message": "", "brand_idx": 0, "brand_total": 0, "user": "",
                      "products_found": 0, "current_brand": "", "done": False, "failed_brands": []}
 # Single global progress dict — simpler and guaranteed to work
 # Multi-user crawling is already prevented by crawl_lock
 crawl_progress = dict(_default_progress)
 
 def get_crawl_progress(uid=None):
+    """Return progress. If another user is crawling, show a waiting message."""
+    progress_user = crawl_progress.get("user", "")
+    if uid and progress_user and progress_user != uid and not crawl_progress.get("done", True):
+        return {"status": "waiting", "message": f"Otro usuario está crawleando ({progress_user})",
+                "done": False, "brand_idx": 0, "brand_total": 0, "products_found": 0}
     return crawl_progress
 crawl_lock = threading.Lock()  # Prevent concurrent crawls
 crawl_lock_time = 0  # Timestamp when lock was acquired (auto-expire after 10 min)
@@ -1540,7 +1612,7 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None):
         "status": "running", "message": "Iniciando...",
         "brand_idx": 0, "brand_total": len(brands),
         "products_found": 0, "current_brand": "", "done": False,
-        "failed_brands": []
+        "failed_brands": [], "user": get_user_id()
     })
 
     # Load previous cache to preserve data for brands that fail
@@ -1850,9 +1922,20 @@ def parse_previous_spreadsheet(file_path):
         for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=True)):
             headers.append(str(cell) if cell else "")
 
+        # Find the Link column by header name (not position)
+        link_col = 0
+        for i, h in enumerate(headers):
+            if h.lower().strip() in ("link", "url", "enlace"):
+                link_col = i
+                break
+
         for row in ws.iter_rows(min_row=2, values_only=True):
-            if row and row[0] and isinstance(row[0], str) and row[0].startswith("http"):
-                url = row[0].strip().rstrip("/")
+            if not row:
+                continue
+            # Get URL from the Link column
+            link_val = row[link_col] if link_col < len(row) else None
+            if link_val and isinstance(link_val, str) and link_val.startswith("http"):
+                url = link_val.strip().rstrip("/")
                 urls.add(url)
                 # Store full row as dict
                 row_dict = {}
@@ -2159,7 +2242,7 @@ def crawl():
     global crawl_lock_time
     if not crawl_lock.acquire(blocking=False):
         # Check if lock is stale (>10 min = crashed thread)
-        if _time.time() - crawl_lock_time > 600:
+        if _time.time() - crawl_lock_time > 300:  # 5 min auto-expire
             print("⚠️ Crawl lock stale (>10 min), force-releasing...")
             try:
                 crawl_lock.release()
@@ -2208,7 +2291,9 @@ def crawl():
 @app.route("/force-unlock", methods=["POST"])
 @login_required
 def force_unlock():
-    """Force-release the crawl lock if it's stuck"""
+    """Force-release the crawl lock if it's stuck. Only admin (sebastian) can force-unlock."""
+    if get_user_id() != "sebastian":
+        return jsonify({"error": "Solo el administrador puede desbloquear"}), 403
     try:
         crawl_lock.release()
     except RuntimeError:
@@ -2236,6 +2321,15 @@ def upload_previous():
     file = request.files.get("file")
     if not file:
         return jsonify({"error": "No file"}), 400
+
+    # Validate file size (max 10MB)
+    file.seek(0, 2)
+    size = file.tell()
+    file.seek(0)
+    if size > 10 * 1024 * 1024:
+        return jsonify({"error": "Archivo demasiado grande (máx 10MB)"}), 400
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({"error": "Solo se aceptan archivos .xlsx"}), 400
 
     uid = get_user_id()
     path = os.path.join(DATA_DIR, f"previous_upload_{uid}.xlsx")
@@ -2403,6 +2497,30 @@ def curate_next():
         "rejected_count": len(session.get("rejected", [])),
         "brands": sorted(available_brands.items(), key=lambda x: -x[1])
     })
+
+
+@app.route("/undo", methods=["POST"])
+@login_required
+def undo_action():
+    """Undo the last accept/reject/trend action."""
+    data = request.get_json(silent=True) or {}
+    last_action = data.get("action", "")
+    product_url = data.get("product_url", "")
+    if not product_url:
+        return jsonify({"error": "No product to undo"}), 400
+
+    session = load_session()
+    if last_action in ("accept", "trend"):
+        # Remove from accepted list
+        session["accepted"] = [p for p in session["accepted"]
+                               if p.get("product_url", "").rstrip("/") != product_url.rstrip("/")]
+    elif last_action == "reject":
+        # Remove from rejected list
+        session["rejected"] = [u for u in session["rejected"]
+                               if u.rstrip("/") != product_url.rstrip("/")]
+    save_session(session)
+    return jsonify({"status": "ok", "accepted": len(session["accepted"]),
+                    "rejected": len(session["rejected"])})
 
 
 @app.route("/action", methods=["POST"])
