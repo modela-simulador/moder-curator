@@ -16,7 +16,7 @@ from firestore_storage import (
     save_country_firestore, load_country_firestore,
     save_cache_firestore, load_cache_firestore,
     clear_session_firestore, clear_cache_firestore, clear_all_firestore,
-    is_firestore_available
+    is_firestore_available, _get_db, firestore_timestamp
 )
 import threading
 import openpyxl
@@ -207,9 +207,8 @@ def save_hidden_brands(domains, country_code=None, user_id=None):
             pass
 
 def _get_db_safe():
-    """Get Firestore db without import errors if not available"""
+    """Get Firestore db, return None if unavailable"""
     try:
-        from firestore_storage import _get_db
         return _get_db()
     except Exception:
         return None
