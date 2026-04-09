@@ -65,41 +65,50 @@ def save_session_firestore(session_data, user_id="default"):
         # Guardar metadata en doc principal (sin listas grandes)
         accepted = session_data.get("accepted", [])
         rejected = session_data.get("rejected", [])
+        # Read previous chunk counts to know exactly what to clean (0 probing reads)
+        prev_doc = db.collection("curator").document(f"session_{user_id}").get()
+        prev_counts = {}
+        if prev_doc.exists:
+            pd = prev_doc.to_dict()
+            prev_counts = {
+                "accepted": pd.get("accepted_chunks", 0),
+                "rejected": pd.get("rejected_chunks", 0),
+                "rows": pd.get("rows_chunks", 0),
+            }
+
+        prev_rows = session_data.get("previous_rows", [])
+        acc_chunks = max((len(accepted) + 99) // 100, 1) if accepted else 0
+        rej_chunks = max((len(rejected) + 499) // 500, 1) if rejected else 0
+        row_chunks = max((len(prev_rows) + 199) // 200, 1) if prev_rows else 0
+
         data = {
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
+            "accepted_chunks": acc_chunks,
+            "rejected_chunks": rej_chunks,
+            "rows_chunks": row_chunks,
             "current_index": session_data.get("current_index", 0),
             "previous_urls": session_data.get("previous_urls", [])[:1000],
             "updated_at": firestore_timestamp(),
         }
         db.collection("curator").document(f"session_{user_id}").set(data)
 
-        # Helper: write chunks and clean orphans up to a safe max index
-        def _write_chunks(prefix, items, chunk_size, key="products"):
-            num_chunks = (len(items) + chunk_size - 1) // chunk_size if items else 0
-            written_indices = set()
+        # Helper: write chunks + clean only known orphans (no probing reads)
+        def _write_chunks(prefix, items, chunk_size, key, prev_count):
+            new_count = (len(items) + chunk_size - 1) // chunk_size if items else 0
             for i in range(0, max(len(items), 1), chunk_size):
                 idx = i // chunk_size
                 doc_id = f"{user_id}_{prefix}_{idx}"
                 db.collection("curator").document(doc_id).set({
                     key: items[i:i + chunk_size], "chunk_index": idx,
                 })
-                written_indices.add(idx)
-            # Clean orphans: check indices beyond what we wrote, up to 100
-            # This handles cases where the list shrunk from a large to small size
-            for idx in range(num_chunks, num_chunks + 100):
-                doc_id = f"{user_id}_{prefix}_{idx}"
-                doc = db.collection("curator").document(doc_id).get()
-                if doc.exists:
-                    doc.reference.delete()
-                else:
-                    break  # No more orphans beyond this point
+            # Delete orphans: only indices from new_count to prev_count
+            for idx in range(new_count, prev_count):
+                db.collection("curator").document(f"{user_id}_{prefix}_{idx}").delete()
 
-        _write_chunks("accepted", accepted, 100, "products")
-        _write_chunks("rejected", rejected, 500, "urls")
-
-        prev_rows = session_data.get("previous_rows", [])
-        _write_chunks("rows", prev_rows, 200, "rows")
+        _write_chunks("accepted", accepted, 100, "products", prev_counts.get("accepted", 0))
+        _write_chunks("rejected", rejected, 500, "urls", prev_counts.get("rejected", 0))
+        _write_chunks("rows", prev_rows, 200, "rows", prev_counts.get("rows", 0))
         return True
     except Exception as e:
         print(f"Error guardando sesión en Firestore: {e}")
@@ -284,37 +293,44 @@ def load_cache_firestore(country):
 # ── Clear ────────────────────────────────────────────────────────────────
 
 def clear_session_firestore(user_id="default"):
-    """Limpia sesión de curación — delete by known doc IDs (no collection scan)."""
+    """Limpia sesión de curación — uses stored chunk counts (no probing reads)."""
     db = _get_db()
     if not db:
         return False
     try:
         col = db.collection("curator")
+        # Read chunk counts from session doc
+        session_doc = col.document(f"session_{user_id}").get()
+        chunk_counts = {"accepted": 20, "rejected": 20, "rows": 10}  # Safe defaults
+        if session_doc.exists:
+            sd = session_doc.to_dict()
+            chunk_counts = {
+                "accepted": max(sd.get("accepted_chunks", 0), 20),
+                "rejected": max(sd.get("rejected_chunks", 0), 20),
+                "rows": max(sd.get("rows_chunks", 0), 10),
+            }
+
         batch = db.batch()
         count = 0
-        # Delete main session doc
+        # Delete session doc
         batch.delete(col.document(f"session_{user_id}"))
         count += 1
-        # Delete chunk docs by index (check existence, stop at first gap)
-        for prefix in ["accepted", "rejected", "rows"]:
-            for idx in range(100):  # Max 100 chunks per type
-                doc_id = f"{user_id}_{prefix}_{idx}"
-                doc = col.document(doc_id).get()
-                if doc.exists:
-                    batch.delete(col.document(doc_id))
-                    count += 1
-                    if count >= 490:  # Flush batch before hitting 500 limit
-                        batch.commit()
-                        batch = db.batch()
-                        count = 0
-                else:
-                    break  # No more chunks
-        # Also delete hidden brands doc
+        # Delete all chunk docs by known count
+        for prefix, max_idx in chunk_counts.items():
+            for idx in range(max_idx):
+                batch.delete(col.document(f"{user_id}_{prefix}_{idx}"))
+                count += 1
+                if count >= 490:
+                    batch.commit()
+                    batch = db.batch()
+                    count = 0
+        # Also delete hidden brands
         batch.delete(col.document(f"hidden_{user_id}"))
         batch.commit()
         return True
     except Exception as e:
         print(f"Error clearing session Firestore: {e}")
+        return False
         return False
 
 

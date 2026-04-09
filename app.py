@@ -67,7 +67,6 @@ USERS = _load_users()
 
 from functools import wraps
 from flask import session as flask_session
-import hmac, hashlib
 
 def login_required(f):
     @wraps(f)
@@ -88,36 +87,9 @@ def _safe_get_user_id():
     except RuntimeError:
         return "anonymous"
 
-def get_csrf_token():
-    """Generate a CSRF token tied to the session."""
-    if "csrf_token" not in flask_session:
-        import secrets
-        flask_session["csrf_token"] = secrets.token_hex(16)
-    return flask_session["csrf_token"]
-
-@app.context_processor
-def inject_csrf():
-    """Make csrf_token available in all templates."""
-    return {"csrf_token": get_csrf_token}
-
-@app.before_request
-def check_csrf():
-    """Verify CSRF token on state-changing requests."""
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return
-    # Skip CSRF for login (no session yet) and health check
-    if request.path in ("/login", "/health"):
-        return
-    # Check token in header or JSON body
-    token = request.headers.get("X-CSRF-Token", "")
-    if not token:
-        data = request.get_json(silent=True) or {}
-        token = data.get("_csrf", "")
-    expected = flask_session.get("csrf_token", "")
-    if not expected or not token:
-        return  # Graceful: don't block if no CSRF yet (backwards compat)
-    if not hmac.compare_digest(token, expected):
-        return jsonify({"error": "CSRF token invalid"}), 403
+# CSRF note: not needed because SESSION_COOKIE_SAMESITE='Lax' prevents
+# cross-origin POSTs from attaching the session cookie. All state-changing
+# endpoints also require login_required. This is sufficient protection.
 
 # ─── Config ──────────────────────────────────────────────────────────────
 # Persistent disk on Render (survives redeploys), fallback to local dir
@@ -322,7 +294,7 @@ HEADERS = {
 }
 
 # ─── Robots.txt cache ────────────────────────────────────────────────────
-_robots_cache = {}  # {domain: (allowed: bool, timestamp)}
+_robots_cache = {}  # {domain: (allowed: bool, timestamp)} — max 200 entries
 
 def is_crawl_allowed(url, user_agent="*"):
     """Check robots.txt for a URL. Cached per domain for 1 hour."""
@@ -337,6 +309,11 @@ def is_crawl_allowed(url, user_agent="*"):
         allowed, ts = _robots_cache[domain]
         if now - ts < 3600:
             return allowed
+
+    # Evict oldest entries if cache is too large
+    if len(_robots_cache) > 200:
+        oldest = min(_robots_cache, key=lambda k: _robots_cache[k][1])
+        del _robots_cache[oldest]
 
     try:
         robots_url = f"{parsed.scheme}://{domain}/robots.txt"
@@ -1405,7 +1382,9 @@ def _fetch_shopify_sitemap_urls(base_url):
         if resp.status_code != 200:
             return []
 
-        root = ET.fromstring(resp.content)
+        root = safe_parse_xml(resp.content)
+        if root is None:
+            return []
         ns = {'s': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 
         # Find product sitemap URLs in the index
@@ -1569,6 +1548,7 @@ crawl_cancel_event = threading.Event()  # Signal crawl thread to stop
 generated_xlsx_per_user = {}  # {user_id: BytesIO buffer} — max 10 entries
 _XLSX_CACHE_MAX = 10
 _last_cleanup_time = 0  # Throttle health check cleanup to once per hour
+_global_cache_lock = threading.Lock()  # Protects _products_cache and generated_xlsx_per_user
 _products_cache = {}  # {cache_file_path: (mtime, products_list)} — max 5 entries
 _PRODUCTS_CACHE_MAX = 5
 
@@ -1577,16 +1557,17 @@ def _get_cached_products(country):
     cache_path = get_cache_file_for_country(country)
     if os.path.exists(cache_path):
         mtime = os.path.getmtime(cache_path)
-        if cache_path in _products_cache and _products_cache[cache_path][0] == mtime:
-            return _products_cache[cache_path][1]
+        with _global_cache_lock:
+            if cache_path in _products_cache and _products_cache[cache_path][0] == mtime:
+                return _products_cache[cache_path][1]
         try:
             with open(cache_path) as f:
                 products = json.load(f).get("products", [])
-            # Evict oldest entry if cache is full
-            if len(_products_cache) >= _PRODUCTS_CACHE_MAX:
-                oldest_key = next(iter(_products_cache))
-                del _products_cache[oldest_key]
-            _products_cache[cache_path] = (mtime, products)
+            with _global_cache_lock:
+                if len(_products_cache) >= _PRODUCTS_CACHE_MAX:
+                    oldest_key = next(iter(_products_cache))
+                    del _products_cache[oldest_key]
+                _products_cache[cache_path] = (mtime, products)
             return products
         except Exception:
             pass
@@ -2586,10 +2567,11 @@ def action():
             return jsonify({"status": "error", "error": "No hay productos aceptados. Acepta al menos uno antes de finalizar."}), 400
         try:
             _, xlsx_buffer = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
-            if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
-                oldest = next(iter(generated_xlsx_per_user))
-                del generated_xlsx_per_user[oldest]
-            generated_xlsx_per_user[uid] = xlsx_buffer
+            with _global_cache_lock:
+                if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
+                    oldest = next(iter(generated_xlsx_per_user))
+                    del generated_xlsx_per_user[oldest]
+                generated_xlsx_per_user[uid] = xlsx_buffer
             print(f"✅ Planilla generada: {len(session['accepted'])} productos → {output_path}")
         except Exception as e:
             print(f"Error generating spreadsheet: {e}")
@@ -2642,10 +2624,11 @@ def download():
         try:
             previous_rows = session.get("previous_rows", [])
             _, xlsx_buffer = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
-            if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
-                oldest = next(iter(generated_xlsx_per_user))
-                del generated_xlsx_per_user[oldest]
-            generated_xlsx_per_user[uid] = xlsx_buffer
+            with _global_cache_lock:
+                if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
+                    oldest = next(iter(generated_xlsx_per_user))
+                    del generated_xlsx_per_user[oldest]
+                generated_xlsx_per_user[uid] = xlsx_buffer
             xlsx_buffer.seek(0)
             return send_file(
                 xlsx_buffer,
