@@ -33,8 +33,9 @@
         .upload-area input { display: none; }
         .step-number { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 50%; background: #1c1c1e; color: white; font-size: 13px; font-weight: 700; flex-shrink: 0; }
         .brand-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-        .brand-chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: #f0f0f0; border-radius: 20px; font-size: 13px; font-weight: 500; }
-        .brand-chip.active { background: #1c1c1e; color: white; }
+        .brand-chip { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; background: #f0f0f0; border-radius: 20px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .brand-chip.active { background: #2e7d32; color: white; }
+        .brand-chip.active:hover { background: #c62828; }
         .brand-chip .remove { cursor: pointer; opacity: 0.5; font-size: 16px; line-height: 1; }
         .brand-chip .remove:hover { opacity: 1; }
         .brand-suggestions { max-height: 200px; overflow-y: auto; border: 1px solid #eee; border-radius: 10px; margin-bottom: 12px; }
@@ -160,12 +161,14 @@
             </div>
             <div class="brand-list" id="activeBrands">
                 {% for brand in active_brands %}
-                <div class="brand-chip active" data-domain="{{ brand.domain }}">
-                    {{ brand.name }}
-                    <span class="remove" onclick="removeBrand('{{ brand.domain }}')">&times;</span>
+                <div class="brand-chip active" data-domain="{{ brand.domain }}" onclick="toggleBrand(this, '{{ brand.domain }}')">
+                    {{ brand.name }} ✓
                 </div>
                 {% endfor %}
             </div>
+            {% if not active_brands %}
+            <div style="text-align:center; padding:12px; font-size:13px; color:#aaa;">Ninguna marca seleccionada</div>
+            {% endif %}
             <hr class="section-divider">
             <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Agregar marca nueva</div>
             <div class="custom-brand-form">
@@ -182,24 +185,28 @@
             <div class="brand-suggestions" id="suggestedList">
                 {% for brand in suggested_brands %}
                 <div class="brand-suggestion" id="sug_{{ brand.domain | replace('.', '_') | replace('/', '_') }}"
-                     data-name="{{ brand.name }}" data-domain="{{ brand.domain }}" data-url="{{ brand.url }}"
-                     onclick="addSuggested(this.dataset.name, this.dataset.domain, this.dataset.url, this)">
-                    <div>
+                     data-name="{{ brand.name }}" data-domain="{{ brand.domain }}" data-url="{{ brand.url }}">
+                    <div onclick="addSuggested(this.parentElement.dataset.name, this.parentElement.dataset.domain, this.parentElement.dataset.url, this.parentElement)" style="flex:1; cursor:pointer;">
                         <strong>{{ brand.name }}</strong>
                         <span class="domain">{{ brand.domain }}</span>
                     </div>
-                    <span class="add-btn">+ Agregar</span>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="add-btn" onclick="addSuggested(this.closest('.brand-suggestion').dataset.name, this.closest('.brand-suggestion').dataset.domain, this.closest('.brand-suggestion').dataset.url, this.closest('.brand-suggestion'))">+ Agregar</span>
+                        <span onclick="event.stopPropagation(); hideBrand(this.closest('.brand-suggestion').dataset.domain, this.closest('.brand-suggestion'))" style="cursor:pointer; font-size:14px; opacity:0.3; padding:4px;" title="Eliminar del registro">🗑</span>
+                    </div>
                 </div>
                 {% endfor %}
-            </div>
-            <div style="text-align: center; padding: 12px;">
-                <button class="btn btn-primary" onclick="location.reload()" style="padding: 10px 24px; font-size: 13px;">
-                    🔄 Actualizar lista de marcas
-                </button>
             </div>
             {% else %}
             <div style="text-align: center; padding: 16px; font-size: 13px; color: #aaa;">
                 Todas las marcas sugeridas ya están activas
+            </div>
+            {% endif %}
+            {% if hidden_count > 0 %}
+            <div style="text-align: center; padding: 8px; margin-top: 4px;">
+                <span onclick="unhideAllBrands()" style="cursor:pointer; font-size: 12px; color: #0066cc; text-decoration: underline;">
+                    Restaurar {{ hidden_count }} marca{{ 's' if hidden_count > 1 else '' }} eliminada{{ 's' if hidden_count > 1 else '' }}
+                </span>
             </div>
             {% endif %}
         </div>
@@ -308,16 +315,58 @@
                 el.style.background = '#e8f5e9';
                 const addBtn = el.querySelector('.add-btn');
                 if (addBtn) addBtn.textContent = '✓';
-                // Don't reload immediately — let user add more brands
+                // Add chip to active brands area
+                const chip = document.createElement('div');
+                chip.className = 'brand-chip active';
+                chip.dataset.domain = domain;
+                chip.textContent = name + ' ✓';
+                chip.onclick = function() { toggleBrand(chip, domain); };
+                document.getElementById('activeBrands').appendChild(chip);
             })
             .catch(err => { console.error('Error adding brand:', err); el.style.opacity = '1'; alert('Error: ' + err.message); });
         }
 
-        function removeBrand(domain) {
+        function toggleBrand(el, domain) {
+            // Animate chip out, then remove from server
+            el.style.transform = 'scale(0.8)';
+            el.style.opacity = '0.3';
+            el.style.pointerEvents = 'none';
             fetch('/remove-brand', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ domain })
+            }).then(() => {
+                el.remove();
+                // Check if brand list is now empty
+                const remaining = document.querySelectorAll('#activeBrands .brand-chip');
+                if (remaining.length === 0) {
+                    location.reload(); // Refresh to show "Ninguna marca" message
+                }
+            });
+        }
+
+        function hideBrand(domain, el) {
+            if (!confirm('¿Eliminar esta marca del registro? No aparecerá en las sugerencias.')) return;
+            el.style.opacity = '0.3';
+            el.style.pointerEvents = 'none';
+            fetch('/hide-brand', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ domain })
+            }).then(() => {
+                el.style.transition = 'all 0.3s';
+                el.style.maxHeight = '0';
+                el.style.padding = '0';
+                el.style.overflow = 'hidden';
+                setTimeout(() => el.remove(), 350);
+            });
+        }
+
+        function unhideAllBrands() {
+            fetch('/unhide-brands', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
             }).then(() => location.reload());
         }
 

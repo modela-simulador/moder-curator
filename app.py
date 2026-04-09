@@ -158,6 +158,62 @@ def _brands_file_for_user(country_code, user_id=None):
     uid = user_id or get_user_id()
     return os.path.join(DATA_DIR, f"brands_{uid}_{country_code}.json")
 
+def _hidden_brands_file(country_code, user_id=None):
+    uid = user_id or get_user_id()
+    return os.path.join(DATA_DIR, f"hidden_brands_{uid}_{country_code}.json")
+
+def load_hidden_brands(country_code=None, user_id=None):
+    """Load list of permanently hidden brand domains"""
+    uid = user_id or get_user_id()
+    cc = country_code or load_active_country()
+    if not cc:
+        return []
+    # Firestore first
+    db = _get_db_safe()
+    if db:
+        try:
+            doc = db.collection("curator").document(f"hidden_{uid}_{cc}").get()
+            if doc.exists:
+                return doc.to_dict().get("domains", [])
+        except Exception:
+            pass
+    # Local file fallback
+    path = _hidden_brands_file(cc, uid)
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return []
+
+def save_hidden_brands(domains, country_code=None, user_id=None):
+    """Save list of permanently hidden brand domains"""
+    uid = user_id or get_user_id()
+    cc = country_code or load_active_country()
+    if not cc:
+        return
+    path = _hidden_brands_file(cc, uid)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(domains, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+    db = _get_db_safe()
+    if db:
+        try:
+            db.collection("curator").document(f"hidden_{uid}_{cc}").set({
+                "domains": domains, "updated_at": firestore_timestamp()
+            })
+        except Exception:
+            pass
+
+def _get_db_safe():
+    """Get Firestore db without import errors if not available"""
+    try:
+        from firestore_storage import _get_db
+        return _get_db()
+    except Exception:
+        return None
+
 def load_active_brands(country_code=None, user_id=None):
     """Load active brands per user+country"""
     uid = user_id or get_user_id()
@@ -1710,6 +1766,7 @@ def index():
                                accepted_count=0, rejected_count=0,
                                previous_count=0, active_brands=[],
                                suggested_brands=[], default_brands=[],
+                               hidden_count=0,
                                active_country="", country_info={})
     session = load_session()
     # Load country-specific cache (Firestore → local file fallback)
@@ -1731,7 +1788,8 @@ def index():
     has_cache = products is not None and len(products) > 0
     all_suggested = SUGGESTED_BRANDS_BY_COUNTRY.get(country, [])
     active_domains = set(b["domain"] for b in active_brands)
-    suggested = [b for b in all_suggested if b["domain"] not in active_domains]
+    hidden_domains = set(load_hidden_brands(country))
+    suggested = [b for b in all_suggested if b["domain"] not in active_domains and b["domain"] not in hidden_domains]
     return render_template("index.html",
                            selecting_country=False,
                            countries=COUNTRIES,
@@ -1742,6 +1800,7 @@ def index():
                            previous_count=len(session.get("previous_urls", [])),
                            active_brands=active_brands,
                            suggested_brands=suggested,
+                           hidden_count=len(hidden_domains),
                            default_brands=DEFAULT_BRANDS,
                            active_country=country,
                            country_info=COUNTRIES.get(country, {}))
@@ -1830,6 +1889,35 @@ def remove_all_brands():
     # Clear curation session and cache
     clear_curation_session(country)
     return jsonify({"status": "ok", "count": 0})
+
+
+@app.route("/hide-brand", methods=["POST"])
+@login_required
+def hide_brand():
+    """Permanently hide a brand from the suggested list"""
+    country = load_active_country()
+    data = request.get_json(silent=True) or {}
+    domain = data.get("domain", "")
+    if not domain:
+        return jsonify({"error": "domain required"}), 400
+    hidden = load_hidden_brands(country)
+    if domain not in hidden:
+        hidden.append(domain)
+        save_hidden_brands(hidden, country)
+    # Also remove from active if present
+    active = load_active_brands(country)
+    active = [b for b in active if b["domain"] != domain]
+    save_active_brands(active, country)
+    return jsonify({"status": "ok", "hidden_count": len(hidden)})
+
+
+@app.route("/unhide-brands", methods=["POST"])
+@login_required
+def unhide_brands():
+    """Restore all hidden brands back to suggested list"""
+    country = load_active_country()
+    save_hidden_brands([], country)
+    return jsonify({"status": "ok"})
 
 
 @app.route("/change-country", methods=["POST"])
