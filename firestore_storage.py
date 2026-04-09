@@ -100,7 +100,7 @@ def save_session_firestore(session_data, user_id="default"):
         # Helper: write chunks + clean only known orphans (no probing reads)
         def _write_chunks(prefix, items, chunk_size, key, prev_count):
             new_count = (len(items) + chunk_size - 1) // chunk_size if items else 0
-            for i in range(0, max(len(items), 1), chunk_size):
+            for i in range(0, len(items), chunk_size):
                 idx = i // chunk_size
                 doc_id = f"{user_id}_{prefix}_{idx}"
                 db.collection("curator").document(doc_id).set({
