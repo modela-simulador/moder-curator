@@ -27,6 +27,7 @@ import time
 from datetime import datetime
 
 app = Flask(__name__)
+app.json.ensure_ascii = True  # Security: escapes < as \u003c in tojson, preventing XSS in <script> tags
 
 # Secret key MUST be set via environment variable — no weak fallback
 _secret = os.environ.get("SECRET_KEY", "")
@@ -1631,13 +1632,17 @@ def crawl_all(brands=None, cache_file=None, progress=None, country=None, user_id
         cache_file = CRAWL_CACHE
 
     crawl_cancel_event.clear()  # Reset cancel signal from previous cancellation
-    crawl_progress.clear()
-    crawl_progress.update({
+    # Replace contents atomically to avoid readers seeing empty dict
+    new_state = {
         "status": "running", "message": "Iniciando...",
         "brand_idx": 0, "brand_total": len(brands),
         "products_found": 0, "current_brand": "", "done": False,
         "failed_brands": [], "user": user_id or "unknown"
-    })
+    }
+    for k in list(crawl_progress.keys()):
+        if k not in new_state:
+            del crawl_progress[k]
+    crawl_progress.update(new_state)
 
     # Load previous cache to preserve data for brands that fail
     prev_products_by_brand = {}
@@ -1802,6 +1807,12 @@ def load_crawl_cache():
 
 # ─── Excel generation ────────────────────────────────────────────────────
 
+def _sanitize_cell(value):
+    """Prevent Excel formula injection (CWE-1236). Prefix dangerous chars with apostrophe."""
+    if isinstance(value, str) and value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + value
+    return value
+
 def generate_plantilla(accepted_products, output_path, previous_rows=None):
     """Generate moder_plantilla_productos.xlsx — accumulated: previous + new accepted"""
     wb = openpyxl.Workbook()
@@ -1890,16 +1901,16 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
     for brand_name, products in brand_groups.items():
         for idx, p in enumerate(products):
             tags = p.get("tags", [])
-            ws.cell(row=row, column=1, value=p["product_url"]).border = thin_border
-            ws.cell(row=row, column=2, value=brand_name).border = thin_border
+            ws.cell(row=row, column=1, value=_sanitize_cell(p["product_url"])).border = thin_border
+            ws.cell(row=row, column=2, value=_sanitize_cell(brand_name)).border = thin_border
             ws.cell(row=row, column=3, value=idx + 1).border = thin_border
             ws.cell(row=row, column=4, value=position).border = thin_border
             ws.cell(row=row, column=5, value="No").border = thin_border
             ws.cell(row=row, column=6, value="Si" if p.get("trend") else "No").border = thin_border
-            ws.cell(row=row, column=7, value=p.get("category", "")).border = thin_border
-            ws.cell(row=row, column=8, value=tags[0] if len(tags) > 0 else "").border = thin_border
-            ws.cell(row=row, column=9, value=tags[1] if len(tags) > 1 else "").border = thin_border
-            ws.cell(row=row, column=10, value=tags[2] if len(tags) > 2 else "").border = thin_border
+            ws.cell(row=row, column=7, value=_sanitize_cell(p.get("category", ""))).border = thin_border
+            ws.cell(row=row, column=8, value=_sanitize_cell(tags[0]) if len(tags) > 0 else "").border = thin_border
+            ws.cell(row=row, column=9, value=_sanitize_cell(tags[1]) if len(tags) > 1 else "").border = thin_border
+            ws.cell(row=row, column=10, value=_sanitize_cell(tags[2]) if len(tags) > 2 else "").border = thin_border
 
             # Green background for new products
             for c in range(1, 11):
@@ -1977,42 +1988,39 @@ def parse_previous_spreadsheet(file_path):
 
 @app.route("/health")
 def health_check():
-    """Health check for Render + monitoring. No auth required."""
+    """Health check for Render. Basic status for unauthenticated, details for logged-in."""
     import time as _t
-    status = {"status": "ok", "timestamp": datetime.now().isoformat()}
+    is_admin = flask_session.get("logged_in", False)
+    status = {"status": "ok"}
 
-    # Check Firestore connectivity
+    # Firestore connectivity (always check — affects Render health)
     try:
         db = _get_db_safe()
         if db:
             db.collection("curator").document("_healthcheck").set({
                 "last_ping": datetime.now().isoformat()
             })
-            status["firestore"] = "connected"
         else:
-            status["firestore"] = "unavailable"
             status["status"] = "degraded"
-    except Exception as e:
-        status["firestore"] = f"error: {str(e)[:100]}"
+    except Exception:
         status["status"] = "degraded"
 
-    # Memory usage
-    try:
-        import resource
-        mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
-        status["memory_mb"] = round(mem_mb, 1)
-    except Exception:
-        pass
-
-    # Crawl lock status
-    locked = not crawl_lock.acquire(blocking=False)
-    if not locked:
-        crawl_lock.release()
-    status["crawl_locked"] = locked
-
-    # In-memory state
-    status["cached_sessions"] = len(_session_cache)
-    status["cached_xlsx"] = len(generated_xlsx_per_user)
+    # Detailed diagnostics only for authenticated users
+    if is_admin:
+        status["timestamp"] = datetime.now().isoformat()
+        status["firestore"] = "connected" if status["status"] == "ok" else "degraded"
+        try:
+            import resource
+            mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
+            status["memory_mb"] = round(mem_mb, 1)
+        except Exception:
+            pass
+        locked = not crawl_lock.acquire(blocking=False)
+        if not locked:
+            crawl_lock.release()
+        status["crawl_locked"] = locked
+        status["cached_sessions"] = len(_session_cache)
+        status["cached_xlsx"] = len(generated_xlsx_per_user)
 
     # Periodic cleanup: evict stale local files older than 7 days (run max once per hour)
     global _last_cleanup_time
@@ -2570,12 +2578,15 @@ def action():
         # Remove from rejected if it was there (dual-tab protection)
         url = product.get("product_url", "").rstrip("/")
         session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
-        session["accepted"].append(product)
+        # Store only fields needed for spreadsheet (saves ~80% memory)
+        slim = {k: product.get(k, "") for k in ("product_url", "brand", "name", "category", "tags", "price")}
+        session["accepted"].append(slim)
     elif act == "trend" and product:
-        product["trend"] = True
         url = product.get("product_url", "").rstrip("/")
         session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
-        session["accepted"].append(product)
+        slim = {k: product.get(k, "") for k in ("product_url", "brand", "name", "category", "tags", "price")}
+        slim["trend"] = True
+        session["accepted"].append(slim)
     elif act == "reject" and product:
         url = product.get("product_url", "").rstrip("/")
         # Remove from accepted if it was there (dual-tab protection)
@@ -2702,7 +2713,9 @@ def cancel_curation():
     # Don't clear the event here — let the crawl thread clear it when it exits
     # This ensures the crawl sees the cancel signal even if it's sleeping between brands
     uid = get_user_id()
-    crawl_progress.clear()
+    for k in list(crawl_progress.keys()):
+        if k not in _default_progress:
+            del crawl_progress[k]
     crawl_progress.update(_default_progress)
     return jsonify({"status": "ok", "message": "Curación cancelada. Sesión limpia."})
 
@@ -2730,7 +2743,9 @@ def clear_curation_session(country=None, user_id=None):
     if country:
         clear_cache_firestore(country)
     # Reset progress per user
-    crawl_progress.clear()
+    for k in list(crawl_progress.keys()):
+        if k not in _default_progress:
+            del crawl_progress[k]
     crawl_progress.update(_default_progress)
 
 

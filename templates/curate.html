@@ -176,7 +176,7 @@
                 {% for img in product.all_images %}
                 <img class="thumb {% if loop.first %}active{% endif %}"
                      src="{{ img }}"
-                     onclick="changeImage(this, '{{ img }}')"
+                     data-url="{{ img }}"
                      onerror="this.style.display='none'">
                 {% endfor %}
             </div>
@@ -385,11 +385,16 @@
         // Start prefetching immediately — load next 5 products + their images
         prefetchBatch();
 
-        function changeImage(thumb, url) {
-            document.getElementById('mainImage').src = url;
+        function changeImage(thumb) {
+            document.getElementById('mainImage').src = thumb.dataset.url;
             document.querySelectorAll('.thumb').forEach(t => t.classList.remove('active'));
             thumb.classList.add('active');
         }
+
+        // Bind server-rendered thumbnails via event delegation (no inline onclick = no XSS)
+        document.getElementById('thumbnails')?.addEventListener('click', function(e) {
+            if (e.target.classList.contains('thumb')) changeImage(e.target);
+        });
 
         function showGeneratingOverlay() {
             const overlay = document.createElement('div');

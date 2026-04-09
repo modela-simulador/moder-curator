@@ -161,7 +161,7 @@
             </div>
             <div class="brand-list" id="activeBrands">
                 {% for brand in active_brands %}
-                <div class="brand-chip active" data-domain="{{ brand.domain }}" onclick="toggleBrand(this, '{{ brand.domain }}')">
+                <div class="brand-chip active" data-domain="{{ brand.domain }}" onclick="toggleBrand(this, this.dataset.domain)">
                     {{ brand.name }} ✓
                 </div>
                 {% endfor %}
