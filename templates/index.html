@@ -322,21 +322,23 @@
         }
 
         function removeAllBrands() {
-            if (!confirm('¿Quitar todas las marcas activas?')) return;
+            if (!confirm('¿Quitar todas las marcas? Podrás volver a seleccionar.')) return;
             document.body.style.opacity = '0.5';
             document.body.style.pointerEvents = 'none';
+            // Solo quita marcas — mantiene país y vuelve a la selección de marcas
             fetch('/remove-all-brands', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
                 .finally(() => location.reload());
         }
 
         function resetAll() {
-            if (!confirm('¿RESETEAR TODO? El robot quedará limpio.')) return;
+            if (!confirm('¿RESETEAR TODO? Se borrarán marcas, productos, sesión, cache y país. El robot quedará completamente limpio.')) return;
             document.body.style.opacity = '0.5';
             document.body.style.pointerEvents = 'none';
-            // Fire both in parallel — don't wait for one before the other
+            // Borra TODO: marcas + sesión + cache + país
             Promise.all([
                 fetch('/reset', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }),
-                fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                fetch('/cancel-curation', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' }),
+                fetch('/change-country', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
             ]).finally(() => location.reload());
         }
 
