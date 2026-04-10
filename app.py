@@ -140,7 +140,7 @@ SUGGESTED_BRANDS_BY_COUNTRY = {
         {"name": "CANDELARIA PÉREZ", "domain": "candelariaperez.cl", "url": "https://www.candelariaperez.cl"},
         {"name": "COCO LABEL", "domain": "cocolabel.cl", "url": "https://www.cocolabel.cl"},
         {"name": "MARIA GULDMAN", "domain": "mariaguldman.cl", "url": "https://www.mariaguldman.cl"},
-        {"name": "CAROLINA FLORES", "domain": "carolinafloreshandmade.cl", "url": "https://www.carolinafloreshandmade.cl"},
+        {"name": "CAROLINA FLORES", "domain": "carolinafloreshandmade.cl", "url": "https://carolinafloreshandmade.cl"},
         {"name": "ADEU.", "domain": "adeu.cl", "url": "https://www.adeu.cl"},
         {"name": "SAINTMALE", "domain": "saintmale.com", "url": "https://www.saintmale.com"},
         {"name": "BORANGORA", "domain": "borangora.com", "url": "https://www.borangora.com"},
@@ -1255,6 +1255,28 @@ def crawl_brand(brand, progress_callback=None):
             progress_callback(f"⚠ {brand['name']}: bloqueado por robots.txt")
         print(f"  🚫 {brand['name']}: blocked by robots.txt")
         return []
+
+    # Try to access the homepage. If it returns 403 but the non-www version
+    # works (or vice versa), swap the URL. Some Cloudflare configs block one.
+    original_url = brand["url"]
+    try:
+        test_resp = requests.get(brand["url"], headers=HEADERS, timeout=10, allow_redirects=True)
+        if test_resp.status_code == 403:
+            # Try alternate www variant
+            if "://www." in brand["url"]:
+                alt_url = brand["url"].replace("://www.", "://", 1)
+            else:
+                alt_url = brand["url"].replace("://", "://www.", 1)
+            try:
+                alt_resp = requests.get(alt_url, headers=HEADERS, timeout=10, allow_redirects=True)
+                if alt_resp.status_code == 200:
+                    print(f"  🔄 {brand['name']}: swapping URL {brand['url']} → {alt_url} (403 on original)")
+                    brand = dict(brand)  # Don't mutate shared dict
+                    brand["url"] = alt_url
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     if progress_callback:
         progress_callback(f"Detectando plataforma de {brand['name']}...")
