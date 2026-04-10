@@ -1813,14 +1813,22 @@ def _sanitize_cell(value):
         return "'" + value
     return value
 
-def generate_plantilla(accepted_products, output_path, previous_rows=None):
-    """Generate moder_plantilla_productos.xlsx — accumulated: previous + new accepted"""
+def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, previous_rows=None):
+    """Generate moder_plantilla_productos.xlsx — ALL products with Aprobado Si/No column.
+
+    Args:
+        all_products: list of all crawled product dicts
+        accepted_urls: set of URLs that were approved
+        trend_urls: set of URLs marked as trending
+        output_path: file path for the xlsx
+        previous_rows: list of dicts from a previously uploaded spreadsheet
+    """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Productos"
 
-    headers = ["Link", "Marca", "Orden", "Posición", "Top 20", "Tendencia",
-               "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3"]
+    headers = ["Link", "Marca", "Aprobado", "Tendencia", "Orden", "Posición",
+               "Top 20", "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3"]
 
     header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="1C1C1E", end_color="1C1C1E", fill_type="solid")
@@ -1839,7 +1847,8 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
         cell.border = thin_border
 
     existing_fill = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")
-    new_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+    approved_fill = PatternFill(start_color="E8F5E9", end_color="E8F5E9", fill_type="solid")
+    rejected_fill = PatternFill(start_color="FFF3E0", end_color="FFF3E0", fill_type="solid")
 
     row = 2
 
@@ -1855,17 +1864,18 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
             col_map = {
                 1: link,
                 2: prev_row.get("Marca", ""),
-                3: prev_row.get("Orden", ""),
-                4: prev_row.get("Posición", ""),
-                5: prev_row.get("Top 20", "No"),
-                6: prev_row.get("Tendencia", "No"),
-                7: prev_row.get("Categoría", ""),
-                8: prev_row.get("Etiqueta 1", ""),
-                9: prev_row.get("Etiqueta 2", ""),
-                10: prev_row.get("Etiqueta 3", ""),
+                3: prev_row.get("Aprobado", prev_row.get("Top 20", "No")),
+                4: prev_row.get("Tendencia", "No"),
+                5: prev_row.get("Orden", ""),
+                6: prev_row.get("Posición", ""),
+                7: prev_row.get("Top 20", "No"),
+                8: prev_row.get("Categoría", ""),
+                9: prev_row.get("Etiqueta 1", ""),
+                10: prev_row.get("Etiqueta 2", ""),
+                11: prev_row.get("Etiqueta 3", ""),
             }
-            for col, val in col_map.items():
-                cell = ws.cell(row=row, column=col, value=val if val else "")
+            for c, val in col_map.items():
+                cell = ws.cell(row=row, column=c, value=val if val else "")
                 cell.border = thin_border
                 cell.fill = existing_fill
 
@@ -1875,13 +1885,13 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
 
             row += 1
 
-    # ── PART 2: Write NEW accepted products (that aren't already in previous)
+    # ── PART 2: Write ALL new products (not in previous) with Aprobado Si/No
     brand_groups = {}
-    for p in accepted_products:
+    for p in all_products:
         url = p.get("product_url", "").rstrip("/")
         if url in prev_urls:
-            continue  # Skip — already in previous
-        brand = p["brand"]
+            continue  # Already in previous spreadsheet
+        brand = p.get("brand", "Desconocida")
         if brand not in brand_groups:
             brand_groups[brand] = []
         brand_groups[brand].append(p)
@@ -1898,46 +1908,56 @@ def generate_plantilla(accepted_products, output_path, previous_rows=None):
 
     position = max_position + 1
     new_count = 0
-    for brand_name, products in brand_groups.items():
+    for brand_name in sorted(brand_groups.keys()):
+        products = brand_groups[brand_name]
         for idx, p in enumerate(products):
+            url = p.get("product_url", "").rstrip("/")
+            is_approved = url in accepted_urls
+            is_trend = url in trend_urls
             tags = p.get("tags", [])
-            ws.cell(row=row, column=1, value=_sanitize_cell(p["product_url"])).border = thin_border
+            if not isinstance(tags, list):
+                tags = []
+
+            ws.cell(row=row, column=1, value=_sanitize_cell(p.get("product_url", ""))).border = thin_border
             ws.cell(row=row, column=2, value=_sanitize_cell(brand_name)).border = thin_border
-            ws.cell(row=row, column=3, value=idx + 1).border = thin_border
-            ws.cell(row=row, column=4, value=position).border = thin_border
-            ws.cell(row=row, column=5, value="No").border = thin_border
-            ws.cell(row=row, column=6, value="Si" if p.get("trend") else "No").border = thin_border
-            ws.cell(row=row, column=7, value=_sanitize_cell(p.get("category", ""))).border = thin_border
-            ws.cell(row=row, column=8, value=_sanitize_cell(tags[0]) if len(tags) > 0 else "").border = thin_border
-            ws.cell(row=row, column=9, value=_sanitize_cell(tags[1]) if len(tags) > 1 else "").border = thin_border
-            ws.cell(row=row, column=10, value=_sanitize_cell(tags[2]) if len(tags) > 2 else "").border = thin_border
+            ws.cell(row=row, column=3, value="Si" if is_approved else "No").border = thin_border
+            ws.cell(row=row, column=4, value="Si" if is_trend else "No").border = thin_border
+            ws.cell(row=row, column=5, value=idx + 1).border = thin_border
+            ws.cell(row=row, column=6, value=position).border = thin_border
+            ws.cell(row=row, column=7, value="No").border = thin_border
+            ws.cell(row=row, column=8, value=_sanitize_cell(p.get("category", ""))).border = thin_border
+            ws.cell(row=row, column=9, value=_sanitize_cell(tags[0]) if len(tags) > 0 else "").border = thin_border
+            ws.cell(row=row, column=10, value=_sanitize_cell(tags[1]) if len(tags) > 1 else "").border = thin_border
+            ws.cell(row=row, column=11, value=_sanitize_cell(tags[2]) if len(tags) > 2 else "").border = thin_border
 
-            # Green background for new products
-            for c in range(1, 11):
-                ws.cell(row=row, column=c).fill = new_fill
+            # Color: green for approved, orange for rejected
+            fill = approved_fill if is_approved else rejected_fill
+            for c in range(1, 12):
+                ws.cell(row=row, column=c).fill = fill
 
-            ws.cell(row=row, column=1).hyperlink = p["product_url"]
-            ws.cell(row=row, column=1).font = Font(color="0066CC", underline="single")
+            ws.cell(row=row, column=1).hyperlink = p.get("product_url", "")
+            ws.cell(row=row, column=1).font = Font(
+                color="0066CC" if is_approved else "999999", underline="single")
 
             row += 1
             new_count += 1
             position += 1
 
     # Column widths
-    widths = [55, 22, 8, 10, 8, 10, 15, 15, 15, 15]
+    widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15]
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
 
-    ws.auto_filter.ref = f"A1:J{row - 1}"
+    ws.auto_filter.ref = f"A1:K{row - 1}"
     ws.freeze_panes = "A2"
 
     # Save to disk
     wb.save(output_path)
-    # Also save to in-memory buffer for reliable download on ephemeral filesystems
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    print(f"Plantilla: {len(previous_rows or [])} anteriores + {new_count} nuevos = {row - 2} total")
+    approved_count = sum(1 for p in all_products if p.get("product_url", "").rstrip("/") in accepted_urls)
+    print(f"Plantilla: {len(previous_rows or [])} anteriores + {new_count} nuevos ({approved_count} aprobados) = {row - 2} total")
     return output_path, buf
 
 
@@ -2615,19 +2635,33 @@ def action():
             return jsonify({"status": "ok", "skipped_brand": brand_to_skip})
     elif act == "finish":
         uid = get_user_id()
+        country = load_active_country()
         output_path = os.path.join(DATA_DIR, f"moder_plantilla_{uid}.xlsx")
         previous_rows = session.get("previous_rows", [])
-        print(f"📊 FINISH: user={uid}, accepted={len(session.get('accepted',[]))}, previous={len(previous_rows)}")
-        if not session.get("accepted"):
-            return jsonify({"status": "error", "error": "No hay productos aceptados. Acepta al menos uno antes de finalizar."}), 400
+
+        # Load ALL crawled products for the spreadsheet
+        all_products = _get_cached_products(country) or []
+        if not all_products:
+            return jsonify({"status": "error", "error": "No hay productos crawleados."}), 400
+
+        # Build sets of approved and trend URLs
+        accepted_urls = set()
+        trend_urls = set()
+        for p in session.get("accepted", []):
+            url = p.get("product_url", "").rstrip("/")
+            accepted_urls.add(url)
+            if p.get("trend"):
+                trend_urls.add(url)
+
+        print(f"📊 FINISH: user={uid}, total={len(all_products)}, approved={len(accepted_urls)}, trends={len(trend_urls)}, previous={len(previous_rows)}")
         try:
-            _, xlsx_buffer = generate_plantilla(session["accepted"], output_path, previous_rows=previous_rows)
+            _, xlsx_buffer = generate_plantilla(all_products, accepted_urls, trend_urls, output_path, previous_rows=previous_rows)
             with _global_cache_lock:
                 if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
                     oldest = next(iter(generated_xlsx_per_user))
                     del generated_xlsx_per_user[oldest]
                 generated_xlsx_per_user[uid] = xlsx_buffer
-            print(f"✅ Planilla generada: {len(session['accepted'])} productos → {output_path}")
+            print(f"✅ Planilla generada: {len(all_products)} productos → {output_path}")
         except Exception as e:
             print(f"Error generating spreadsheet: {e}")
             import traceback
@@ -2675,10 +2709,14 @@ def download():
 
     # Last resort: regenerate from user's session data
     session = load_session()
-    if session.get("accepted"):
+    country = load_active_country()
+    all_products = _get_cached_products(country) or []
+    if all_products:
         try:
             previous_rows = session.get("previous_rows", [])
-            _, xlsx_buffer = generate_plantilla(session["accepted"], path, previous_rows=previous_rows)
+            accepted_urls = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []))
+            trend_urls = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []) if p.get("trend"))
+            _, xlsx_buffer = generate_plantilla(all_products, accepted_urls, trend_urls, path, previous_rows=previous_rows)
             with _global_cache_lock:
                 if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
                     oldest = next(iter(generated_xlsx_per_user))

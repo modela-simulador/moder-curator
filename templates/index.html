@@ -156,7 +156,6 @@
                 <div style="font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px;">Marcas activas</div>
                 {% if active_brands %}
                 <button class="btn btn-small" onclick="removeAllBrands()" style="font-size: 11px; padding: 5px 12px; background: #fce4ec; color: #c62828; border: none;">Quitar todas</button>
-                <button class="btn btn-small" onclick="resetAll()" style="font-size: 11px; padding: 5px 12px; background: #ffebee; color: #b71c1c; border: none; margin-left: 4px;">Resetear todo</button>
                 {% endif %}
             </div>
             <div class="brand-list" id="activeBrands">
@@ -255,8 +254,12 @@
         </div>
         {% endif %}
 
+        <!-- Resetear todo — prominente -->
         <div style="text-align: center; margin-top: 30px;">
-            <button onclick="resetSession()" style="background:none; border:none; color:#ccc; font-size:12px; cursor:pointer;">Reiniciar sesión</button>
+            <button onclick="resetAll()" class="btn" style="background: #b71c1c; color: white; border: none; width: 100%; max-width: 500px; padding: 16px; font-size: 15px; font-weight: 700; border-radius: 14px; cursor: pointer;">
+                🔄 Resetear todo y empezar de cero
+            </button>
+            <p style="font-size: 11px; color: #aaa; margin-top: 8px;">Borra marcas, productos, sesión y cache</p>
         </div>
     </div>
 
