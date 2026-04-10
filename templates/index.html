@@ -246,11 +246,9 @@
             <h2>✦ Productos listos para curar</h2>
             <p>{{ product_count }} productos encontrados. Al terminar el crawl se abre automáticamente.</p>
             <a href="/curate" class="btn btn-primary" style="text-decoration:none; color:white;">Continuar curado</a>
-            {% if accepted_count > 0 %}
-            <a href="/download" class="btn btn-secondary" style="text-decoration:none; color:#1c1c1e; margin-top:8px;">
-                📥 Descargar planilla ({{ accepted_count }} productos)
-            </a>
-            {% endif %}
+            <button onclick="generatePlanilla(this)" class="btn btn-secondary" style="color:#1c1c1e; margin-top:8px;">
+                📥 Generar planilla ({{ accepted_count }} aprobados de {{ product_count }})
+            </button>
         </div>
         {% endif %}
 
@@ -456,6 +454,31 @@
                             });
                     }, 2000);
                 });
+        }
+
+        function generatePlanilla(btn) {
+            btn.textContent = 'Descargando...';
+            btn.disabled = true;
+            fetch('/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'finish' })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'error') {
+                    alert('Error: ' + (data.error || 'No se pudo generar'));
+                    btn.textContent = '📥 Generar planilla';
+                    btn.disabled = false;
+                    return;
+                }
+                window.location.href = '/download';
+            })
+            .catch(err => {
+                alert('Error: ' + err.message);
+                btn.textContent = '📥 Generar planilla';
+                btn.disabled = false;
+            });
         }
 
         function forceUnlock() {

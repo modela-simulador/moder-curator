@@ -41,12 +41,36 @@
         <div class="title">MODÈR</div>
         <div class="subtitle">Todos los productos han sido revisados</div>
         <div class="stat">{{ accepted_count }}</div>
-        <div class="stat-label">productos aceptados de {{ total }}</div>
+        <div class="stat-label">productos aprobados de {{ total }} revisados</div>
 
-        {% if accepted_count > 0 %}
-        <a href="/download" class="btn btn-primary">📥 Descargar planilla</a><br>
-        {% endif %}
+        <button onclick="generateAndDownload(this)" class="btn btn-primary">📥 Generar y descargar planilla</button><br>
         <a href="/" class="btn btn-secondary">← Volver al inicio</a>
     </div>
+    <script>
+        function generateAndDownload(btn) {
+            btn.textContent = 'Descargando...';
+            btn.disabled = true;
+            fetch('/action', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'finish' })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'error') {
+                    alert('Error: ' + (data.error || 'No se pudo generar'));
+                    btn.textContent = '📥 Generar y descargar planilla';
+                    btn.disabled = false;
+                    return;
+                }
+                window.location.href = '/download';
+            })
+            .catch(err => {
+                alert('Error: ' + err.message);
+                btn.textContent = '📥 Generar y descargar planilla';
+                btn.disabled = false;
+            });
+        }
+    </script>
 </body>
 </html>
