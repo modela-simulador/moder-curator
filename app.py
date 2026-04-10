@@ -143,10 +143,8 @@ SUGGESTED_BRANDS_BY_COUNTRY = {
         {"name": "CAROLINA FLORES", "domain": "carolinafloreshandmade.cl", "url": "https://carolinafloreshandmade.cl"},
         {"name": "ADEU.", "domain": "adeu.cl", "url": "https://www.adeu.cl"},
         {"name": "SAINTMALE", "domain": "saintmale.com", "url": "https://www.saintmale.com"},
-        {"name": "BORANGORA", "domain": "borangora.com", "url": "https://www.borangora.com"},
         {"name": "CAIS.", "domain": "caiszapatos.com", "url": "https://www.caiszapatos.com"},
         {"name": "MANTO SILVESTRE", "domain": "mantosilvestre.cl", "url": "https://www.mantosilvestre.cl"},
-        {"name": "BOADELA", "domain": "boadela.cl", "url": "https://www.boadela.cl"},
     ],
     "AR": [],
     "MX": [],
@@ -790,11 +788,24 @@ def _scrape_single_product_page(url, brand):
                         or soup.find("form", {"action": "/cart/add"})  # Shopify
                         or soup.find("form", class_="product-form"))
         og_type = soup.find("meta", property="og:type")
-        is_og_product = og_type and og_type.get("content", "").lower() in ("product", "og:product")
+        og_type_val = og_type.get("content", "").lower() if og_type else ""
+        is_og_product = og_type_val in ("product", "og:product")
+        is_og_website = og_type_val == "website"  # Definitely a listing/collection page, not a product
         has_product_schema = bool(soup.find(attrs={"itemtype": lambda v: v and "Product" in v}))
 
+        # A page with og:type=website is a collection/listing page — never a product page.
+        # A page with only has_price (no cart, no og:product, no schema) is likely a listing page.
+        if is_og_website and not has_product_schema:
+            return None
         if not has_price and not has_cart and not is_og_product and not has_product_schema:
             return None
+        # has_price alone on a page without a cart or product schema is unreliable
+        # (listing pages show prices). Require at least one stronger signal.
+        if has_price and not has_cart and not is_og_product and not has_product_schema:
+            # Accept only if there's a single price element (not multiple → listing page)
+            price_els = soup.select("[class*='price']")
+            if len(price_els) > 3:
+                return None  # Too many price elements = listing/category page
 
         # Extract name
         name = ""
@@ -828,20 +839,34 @@ def _scrape_single_product_page(url, brand):
 
         price = ""
         for price_sel in [
-            ".price .woocommerce-Price-amount", "[itemprop='price']",
+            # Meta tags first — most reliable, no risk of matching listing prices
+            "meta[property='product:price:amount']",
+            "meta[name='product_price']",
+            # Structured data attributes
+            "[itemprop='price']",
+            # Specific platform price elements (before generic [class*='price'])
+            ".price .woocommerce-Price-amount",
+            ".price ins .woocommerce-Price-amount",  # WooCommerce sale price
             ".price", ".product-price", ".current-price",
-            "[class*='price']", "meta[property='product:price:amount']",
+            # Generic fallback — last resort (can match listing pages)
+            "[class*='price']",
         ]:
             price_el = soup.select_one(price_sel)
             if price_el:
                 if price_el.name == "meta":
-                    price = price_el.get("content", "")
+                    raw = price_el.get("content", "")
+                    # Strip decimal part for LatAm (e.g., "149990.0" → "149990")
+                    try:
+                        price = str(int(float(raw))) if raw else ""
+                    except (ValueError, TypeError):
+                        price = raw
                 else:
                     price_text = price_el.get_text(strip=True)
                     nums = re.findall(r'[\d.,]+', price_text)
                     if nums:
                         price = _normalize_price(nums[0])
-                if price:
+                # Skip "0" — likely a placeholder/missing price, try next selector
+                if price and price != "0":
                     break
 
         # Extract description
@@ -956,6 +981,8 @@ def crawl_html_scrape(brand, progress_callback=None):
     # ── PHASE 1: Try sitemaps first (most reliable for any platform) ────
     sitemap_urls = _fetch_generic_sitemap_urls(base_url, brand.get("domain", ""))
     if sitemap_urls:
+        # Use a shorter delay for larger sitemaps to stay within the 3-minute timeout
+        sitemap_delay = 0.8 if len(sitemap_urls) > 60 else 1.5
         log(f"{brand['name']}: {len(sitemap_urls)} URLs en sitemap, scrapeando...")
         for i, purl in enumerate(sitemap_urls):
             if i % 5 == 0:
@@ -964,7 +991,7 @@ def crawl_html_scrape(brand, progress_callback=None):
             if scraped:
                 known_urls.add(purl.rstrip("/").lower())
                 products.append(scraped)
-            time.sleep(1.5)
+            time.sleep(sitemap_delay)
 
     # ── PHASE 2: HTML navigation (explore shop/catalog pages) ───────────
     log(f"{brand['name']}: buscando más en páginas de catálogo...")
@@ -1174,6 +1201,7 @@ def crawl_jumpseller(brand, progress_callback=None):
         "politicas-de-cambio", "terminos-y-condiciones", "terminos", "condiciones",
         "como-cuidar-mi-zapato", "faq", "preguntas-frecuentes",
         "pages", "policies", "search", "collections", "categories",
+        "informacion", "information", "venta-especial", "rebajas", "sale",
     }
 
     # ── PHASE 1: Sitemap — try to scrape each non-page URL ──────────
@@ -1193,13 +1221,22 @@ def crawl_jumpseller(brand, progress_callback=None):
                     u = loc.text.strip().rstrip("/")
                     if u == base_url:
                         continue
-                    slug = u.replace(base_url, "").strip("/").split("/")[0].lower()
+                    # Only root-level URLs (single path segment) — sub-pages like
+                    # /37-1/disponibilidad-por-talla-37 are size/availability pages, not products
+                    path_parts = [s for s in u.replace(base_url, "").strip("/").split("/") if s]
+                    if len(path_parts) != 1:
+                        continue
+                    slug = path_parts[0].lower()
                     if slug and slug not in SKIP_SLUGS:
                         candidate_urls.append(u)
     except Exception as e:
         print(f"    Jumpseller sitemap error: {e}")
 
     if candidate_urls:
+        # Cap at 200 candidates to stay within the 3-minute per-brand timeout
+        if len(candidate_urls) > 200:
+            print(f"    {brand['name']}: capping {len(candidate_urls)} candidates to 200")
+            candidate_urls = candidate_urls[:200]
         log(f"{brand['name']}: {len(candidate_urls)} URLs en sitemap, verificando cuáles son productos...")
         for i, purl in enumerate(candidate_urls):
             if i % 5 == 0:
@@ -1208,7 +1245,7 @@ def crawl_jumpseller(brand, progress_callback=None):
             if scraped:
                 known_urls.add(purl.rstrip("/").lower())
                 products.append(scraped)
-            time.sleep(1.0)
+            time.sleep(0.5)  # Reduced from 1.0s to stay within timeout budget
 
     # ── PHASE 2: Homepage links — catch anything not in sitemap ──────
     if not products:
@@ -1256,9 +1293,8 @@ def crawl_brand(brand, progress_callback=None):
         print(f"  🚫 {brand['name']}: blocked by robots.txt")
         return []
 
-    # Try to access the homepage. If it returns 403 but the non-www version
-    # works (or vice versa), swap the URL. Some Cloudflare configs block one.
-    original_url = brand["url"]
+    # Normalize URL: follow redirects to get canonical base URL (e.g., non-www → www or vice versa).
+    # Also handles 403 Cloudflare blocks by trying the alternate www variant.
     try:
         test_resp = requests.get(brand["url"], headers=HEADERS, timeout=10, allow_redirects=True)
         if test_resp.status_code == 403:
@@ -1271,10 +1307,17 @@ def crawl_brand(brand, progress_callback=None):
                 alt_resp = requests.get(alt_url, headers=HEADERS, timeout=10, allow_redirects=True)
                 if alt_resp.status_code == 200:
                     print(f"  🔄 {brand['name']}: swapping URL {brand['url']} → {alt_url} (403 on original)")
-                    brand = dict(brand)  # Don't mutate shared dict
-                    brand["url"] = alt_url
+                    brand = dict(brand)
+                    brand["url"] = alt_url.rstrip("/")
             except Exception:
                 pass
+        elif test_resp.status_code == 200:
+            # Follow redirect to canonical URL (e.g., wearearde.cl → www.wearearde.cl)
+            canonical = test_resp.url.rstrip("/")
+            if canonical != brand["url"].rstrip("/") and brand.get("domain", "") in canonical:
+                print(f"  🔄 {brand['name']}: canonical URL {brand['url']} → {canonical}")
+                brand = dict(brand)
+                brand["url"] = canonical
     except Exception:
         pass
 
@@ -1496,9 +1539,12 @@ def categorize(tags, title):
         "Pantalón": ["pantalón", "pantalon", "pants"],
         "Falda": ["falda", "skirt", "pollera"],
         "Blusa": ["blusa", "top", "camiseta", "camisa", "shirt"],
-        "Zapatos": ["zapato", "bota", "botin", "sandalia", "shoe", "boot", "mocasín"],
-        "Bolso": ["bolso", "cartera", "bag", "tote", "clutch"],
-        "Accesorio": ["accesorio", "collar", "arete", "cinturón", "pañuelo"],
+        "Zapatos": ["zapato", "bota", "botin", "sandalia", "shoe", "boot", "mocasín",
+                    "mocasin", "ballerina", "bailarina", "sapatilha", "taco", "plataforma",
+                    "stiletto", "loafer", "oxford", "sneaker", "zapatilla"],
+        "Bolso": ["bolso", "cartera", "bag", "tote", "clutch", "riñonera", "mochila"],
+        "Accesorio": ["accesorio", "collar", "arete", "cinturón", "pañuelo",
+                      "arnes", "arnés", "hebilla", "pulsera", "anillo", "aros", "joyas"],
         "Shorts": ["short", "shorts"],
         "Jeans": ["jean", "jeans", "denim"],
         "Pijama": ["pijama", "pajama"],
