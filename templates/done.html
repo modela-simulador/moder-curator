@@ -63,7 +63,14 @@
                     btn.disabled = false;
                     return;
                 }
-                window.location.href = '/download';
+                // Download via hidden link (iOS Safari compatible)
+                const a = document.createElement('a');
+                a.href = '/download';
+                a.download = 'moder_plantilla_productos.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => { window.location.href = '/download'; }, 1000);
             })
             .catch(err => {
                 alert('Error: ' + err.message);

@@ -40,6 +40,9 @@ app.secret_key = _secret
 app.config['SESSION_COOKIE_SECURE'] = True      # Required for Safari Private Browsing
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Prevents cookie being dropped on cross-site
 app.config['SESSION_COOKIE_HTTPONLY'] = True      # XSS protection
+app.config['SESSION_PERMANENT'] = True
+from datetime import timedelta
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 
 # ─── Auth ────────────────────────────────────────────────────────────────
 # Credentials from env vars. Format: "user1:hash1,user2:hash2"
