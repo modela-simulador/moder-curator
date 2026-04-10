@@ -427,8 +427,8 @@
             if (action === 'finish') {
                 const prev = product._previous_count || 0;
                 const msg = prev > 0
-                    ? `¿Terminar? Se generará la planilla con ${prev} anteriores + ${accepted} nuevos.`
-                    : `¿Terminar? Se generará la planilla con ${accepted} productos.`;
+                    ? `¿Terminar? Se generará la planilla con todos los productos (${accepted} aprobados) + ${prev} anteriores.`
+                    : `¿Terminar? Se generará la planilla con todos los productos (${accepted} aprobados).`;
                 if (!confirm(msg)) return;
 
                 showGeneratingOverlay();
