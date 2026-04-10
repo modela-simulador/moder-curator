@@ -1245,6 +1245,34 @@ def crawl_tiendanube(brand, progress_callback=None):
     return crawl_html_scrape(brand, progress_callback)
 
 
+def _check_waf_block(url):
+    """Detect if a site is blocked by Cloudflare/WAF. Returns (is_blocked, reason)."""
+    try:
+        # Use richer headers to mimic a real browser
+        headers = {
+            "User-Agent": HEADERS["User-Agent"],
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "es-CL,es;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+        }
+        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        if resp.status_code == 403:
+            server = resp.headers.get("server", "").lower()
+            if "cloudflare" in server:
+                return True, "Cloudflare WAF (403)"
+            return True, f"Forbidden (403, server: {server or 'unknown'})"
+        if resp.status_code == 503 and "cf-ray" in resp.headers:
+            return True, "Cloudflare challenge (503)"
+        if resp.status_code == 429:
+            return True, "Rate limited (429)"
+        return False, None
+    except Exception as e:
+        return False, None  # On error, let the regular crawlers try
+
+
 def crawl_brand(brand, progress_callback=None):
     """Fetch all products — auto-detects platform and uses the right method"""
     # Check robots.txt first
@@ -1252,6 +1280,19 @@ def crawl_brand(brand, progress_callback=None):
         if progress_callback:
             progress_callback(f"⚠ {brand['name']}: bloqueado por robots.txt")
         print(f"  🚫 {brand['name']}: blocked by robots.txt")
+        return []
+
+    # Check WAF/Cloudflare block BEFORE attempting crawl
+    blocked, reason = _check_waf_block(brand["url"])
+    if blocked:
+        msg = f"⚠ {brand['name']}: bloqueado por {reason} — requiere revisión manual"
+        if progress_callback:
+            progress_callback(msg)
+        print(f"  🛡 {brand['name']}: {reason}")
+        try:
+            log_error_to_firestore("waf_blocked", msg, {"domain": brand.get("domain", ""), "reason": reason})
+        except Exception:
+            pass
         return []
 
     if progress_callback:

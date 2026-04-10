@@ -119,13 +119,18 @@
         {% else %}
 
         <!-- Country badge -->
-        <div style="text-align: center; margin-bottom: 20px;">
+        <div style="text-align: center; margin-bottom: 16px;">
             <span style="display: inline-flex; align-items: center; gap: 8px; padding: 8px 18px; background: white; border-radius: 20px; font-size: 14px; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.06);">
                 {{ country_info.flag }} {{ country_info.name }}
                 <span style="font-size: 11px; color: #aaa;">({{ country_info.currency }})</span>
                 <span onclick="changeCountry()" style="cursor: pointer; margin-left: 4px; font-size: 12px; color: #0066cc;">Cambiar</span>
             </span>
         </div>
+
+        <!-- Resetear todo — protagonista, arriba -->
+        <button onclick="resetAll()" style="background: #b71c1c; color: white; border: none; width: 100%; padding: 18px; font-size: 16px; font-weight: 700; border-radius: 16px; cursor: pointer; margin-bottom: 24px; box-shadow: 0 4px 12px rgba(183,28,28,0.25); display: flex; align-items: center; justify-content: center; gap: 10px;">
+            🔄 Resetear todo y empezar de cero
+        </button>
 
         <!-- Step 1: Previous spreadsheet -->
         <div class="card">
@@ -252,13 +257,6 @@
         </div>
         {% endif %}
 
-        <!-- Resetear todo — prominente -->
-        <div style="text-align: center; margin-top: 30px;">
-            <button onclick="resetAll()" class="btn" style="background: #b71c1c; color: white; border: none; width: 100%; max-width: 500px; padding: 16px; font-size: 15px; font-weight: 700; border-radius: 14px; cursor: pointer;">
-                🔄 Resetear todo y empezar de cero
-            </button>
-            <p style="font-size: 11px; color: #aaa; margin-top: 8px;">Borra marcas, productos, sesión y cache</p>
-        </div>
     </div>
 
     <script>
