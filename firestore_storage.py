@@ -349,8 +349,10 @@ def clear_session_firestore(user_id="default"):
                     batch.commit()
                     batch = db.batch()
                     count = 0
-        # Also delete hidden brands
-        batch.delete(col.document(f"hidden_{user_id}"))
+        # Delete hidden brands for all countries
+        for cc in ["CL", "AR", "MX", "CO", "ES"]:
+            batch.delete(col.document(f"hidden_{user_id}_{cc}"))
+            count += 1
         batch.commit()
         return True
     except Exception as e:

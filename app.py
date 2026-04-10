@@ -1807,6 +1807,10 @@ def load_crawl_cache():
 
 # ─── Excel generation ────────────────────────────────────────────────────
 
+def _norm_url(url):
+    """Normalize URL for comparison: strip trailing slash, lowercase."""
+    return url.rstrip("/").lower() if url else ""
+
 def _sanitize_cell(value):
     """Prevent Excel formula injection (CWE-1236). Prefix dangerous chars with apostrophe."""
     if isinstance(value, str) and value and value[0] in ('=', '+', '-', '@', '\t', '\r'):
@@ -1859,7 +1863,7 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
             link = str(prev_row.get("Link", ""))
             if not link.startswith("http"):
                 continue
-            prev_urls.add(link.rstrip("/"))
+            prev_urls.add(_norm_url(link))
 
             col_map = {
                 1: link,
@@ -1888,7 +1892,7 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
     # ── PART 2: Write ALL new products (not in previous) with Aprobado Si/No
     brand_groups = {}
     for p in all_products:
-        url = p.get("product_url", "").rstrip("/")
+        url = _norm_url(p.get("product_url", ""))
         if url in prev_urls:
             continue  # Already in previous spreadsheet
         brand = p.get("brand", "Desconocida")
@@ -1911,7 +1915,7 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
     for brand_name in sorted(brand_groups.keys()):
         products = brand_groups[brand_name]
         for idx, p in enumerate(products):
-            url = p.get("product_url", "").rstrip("/")
+            url = _norm_url(p.get("product_url", ""))
             is_approved = url in accepted_urls
             is_trend = url in trend_urls
             tags = p.get("tags", [])
@@ -1956,7 +1960,7 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    approved_count = sum(1 for p in all_products if p.get("product_url", "").rstrip("/") in accepted_urls)
+    approved_count = sum(1 for p in all_products if _norm_url(p.get("product_url", "")) in accepted_urls)
     print(f"Plantilla: {len(previous_rows or [])} anteriores + {new_count} nuevos ({approved_count} aprobados) = {row - 2} total")
     return output_path, buf
 
@@ -1989,7 +1993,7 @@ def parse_previous_spreadsheet(file_path):
             # Get URL from the Link column
             link_val = row[link_col] if link_col < len(row) else None
             if link_val and isinstance(link_val, str) and link_val.startswith("http"):
-                url = link_val.strip().rstrip("/")
+                url = _norm_url(link_val.strip())
                 urls.add(url)
                 # Store full row as dict
                 row_dict = {}
@@ -2439,12 +2443,12 @@ def curate():
         return redirect(url_for("index"))
 
     # Filter out previously known URLs
-    previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
+    previous_urls = set(_norm_url(u) for u in session.get("previous_urls", []))
     processed_urls = set()
     for p in session.get("accepted", []):
-        processed_urls.add(p.get("product_url", "").rstrip("/"))
+        processed_urls.add(_norm_url(p.get("product_url", "")))
     for url in session.get("rejected", []):
-        processed_urls.add(url.rstrip("/"))
+        processed_urls.add(_norm_url(url))
 
     # Brand filter from query param
     brand_filter = request.args.get("brand", "")
@@ -2457,7 +2461,7 @@ def curate():
     remaining = []
     all_remaining = []
     for p in products:
-        url = p["product_url"].rstrip("/")
+        url = _norm_url(p["product_url"])
         if active_brand_names and p.get("brand", "") not in active_brand_names:
             continue
         if url not in previous_urls and url not in processed_urls:
@@ -2509,12 +2513,12 @@ def curate_next():
     if not products:
         return jsonify({"done": True, "accepted": len(session.get("accepted", []))})
 
-    previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
+    previous_urls = set(_norm_url(u) for u in session.get("previous_urls", []))
     processed_urls = set()
     for p in session.get("accepted", []):
-        processed_urls.add(p.get("product_url", "").rstrip("/"))
+        processed_urls.add(_norm_url(p.get("product_url", "")))
     for url in session.get("rejected", []):
-        processed_urls.add(url.rstrip("/"))
+        processed_urls.add(_norm_url(url))
 
     active_brands = load_active_brands(country)
     active_brand_names = set(b["name"] for b in active_brands) if active_brands else set()
@@ -2523,7 +2527,7 @@ def curate_next():
     remaining = []
     all_remaining = []
     for p in products:
-        url = p["product_url"].rstrip("/")
+        url = _norm_url(p["product_url"])
         if active_brand_names and p.get("brand", "") not in active_brand_names:
             continue
         if url not in previous_urls and url not in processed_urls:
@@ -2572,14 +2576,13 @@ def undo_action():
         return jsonify({"error": "No product to undo"}), 400
 
     session = load_session()
+    norm = _norm_url(product_url)
     if last_action in ("accept", "trend"):
-        # Remove from accepted list
         session["accepted"] = [p for p in session["accepted"]
-                               if p.get("product_url", "").rstrip("/") != product_url.rstrip("/")]
+                               if _norm_url(p.get("product_url", "")) != norm]
     elif last_action == "reject":
-        # Remove from rejected list
         session["rejected"] = [u for u in session["rejected"]
-                               if u.rstrip("/") != product_url.rstrip("/")]
+                               if _norm_url(u) != norm]
     save_session(session)
     return jsonify({"status": "ok", "accepted": len(session["accepted"]),
                     "rejected": len(session["rejected"])})
@@ -2596,21 +2599,21 @@ def action():
 
     if act == "accept" and product:
         # Remove from rejected if it was there (dual-tab protection)
-        url = product.get("product_url", "").rstrip("/")
-        session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
+        url = _norm_url(product.get("product_url", ""))
+        session["rejected"] = [u for u in session["rejected"] if _norm_url(u) != url]
         # Store only fields needed for spreadsheet (saves ~80% memory)
         slim = {k: product.get(k, "") for k in ("product_url", "brand", "name", "category", "tags", "price")}
         session["accepted"].append(slim)
     elif act == "trend" and product:
-        url = product.get("product_url", "").rstrip("/")
-        session["rejected"] = [u for u in session["rejected"] if u.rstrip("/") != url]
+        url = _norm_url(product.get("product_url", ""))
+        session["rejected"] = [u for u in session["rejected"] if _norm_url(u) != url]
         slim = {k: product.get(k, "") for k in ("product_url", "brand", "name", "category", "tags", "price")}
         slim["trend"] = True
         session["accepted"].append(slim)
     elif act == "reject" and product:
-        url = product.get("product_url", "").rstrip("/")
+        url = _norm_url(product.get("product_url", ""))
         # Remove from accepted if it was there (dual-tab protection)
-        session["accepted"] = [p for p in session["accepted"] if p.get("product_url", "").rstrip("/") != url]
+        session["accepted"] = [p for p in session["accepted"] if _norm_url(p.get("product_url", "")) != url]
         session["rejected"].append(url)
     elif act == "skip_brand":
         # Reject ALL remaining products from this brand
@@ -2624,11 +2627,11 @@ def action():
                     products = json.load(f).get("products", [])
             if not products:
                 products = load_cache_firestore(country) or []
-            previous_urls = set(u.rstrip("/") for u in session.get("previous_urls", []))
+            previous_urls = set(_norm_url(u) for u in session.get("previous_urls", []))
             processed = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []))
             processed.update(u.rstrip("/") for u in session.get("rejected", []))
             for p in products:
-                url = p["product_url"].rstrip("/")
+                url = _norm_url(p["product_url"])
                 if p.get("brand") == brand_to_skip and url not in previous_urls and url not in processed:
                     session["rejected"].append(url)
             save_session(session)
@@ -2648,7 +2651,7 @@ def action():
         accepted_urls = set()
         trend_urls = set()
         for p in session.get("accepted", []):
-            url = p.get("product_url", "").rstrip("/")
+            url = _norm_url(p.get("product_url", ""))
             accepted_urls.add(url)
             if p.get("trend"):
                 trend_urls.add(url)
@@ -2714,8 +2717,8 @@ def download():
     if all_products:
         try:
             previous_rows = session.get("previous_rows", [])
-            accepted_urls = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []))
-            trend_urls = set(p.get("product_url", "").rstrip("/") for p in session.get("accepted", []) if p.get("trend"))
+            accepted_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []))
+            trend_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []) if p.get("trend"))
             _, xlsx_buffer = generate_plantilla(all_products, accepted_urls, trend_urls, path, previous_rows=previous_rows)
             with _global_cache_lock:
                 if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:

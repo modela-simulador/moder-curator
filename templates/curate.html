@@ -251,7 +251,8 @@
         let isFetchingBatch = false;
         let actionCooldown = false; // 0.5s cooldown between actions
         let seenUrls = new Set(); // Track ALL shown products to prevent repeats
-        seenUrls.add(product.product_url); // Current product already shown
+        function normUrl(u) { return (u || '').replace(/\/+$/, '').toLowerCase(); }
+        seenUrls.add(normUrl(product.product_url)); // Current product already shown
         let lastAction = null;     // {action, product} for undo
 
         // ─── Offline-safe action queue ───────────────────────────────
@@ -347,7 +348,7 @@
                     if (!data.done && data.products) {
                         const existingUrls = new Set(productQueue.map(p => p.product_url));
                         for (const p of data.products) {
-                            if (!existingUrls.has(p.product_url) && !seenUrls.has(p.product_url)) {
+                            if (!existingUrls.has(p.product_url) && !seenUrls.has(normUrl(p.product_url))) {
                                 productQueue.push(p);
                                 // Prefetch ALL images into browser cache
                                 if (p.image_url) { const i = new Image(); i.src = p.image_url; }
@@ -555,7 +556,7 @@
                     }
                 }
                 product = p;
-                seenUrls.add(p.product_url); // Track as shown to prevent repeats
+                seenUrls.add(normUrl(p.product_url)); // Track as shown to prevent repeats
 
                 const thumbs = document.getElementById('thumbnails');
                 if (thumbs && p.all_images && p.all_images.length > 1) {
