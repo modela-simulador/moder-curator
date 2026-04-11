@@ -1890,8 +1890,103 @@ def _sanitize_cell(value):
         return "'" + value
     return value
 
-def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, previous_rows=None):
+def build_curated_brands_for_ordering(session, country, brand_selection_order=None):
+    """Cruza session['accepted'] con el crawl cache para reconstruir las marcas
+    aprobadas con toda la información necesaria para la UI del Paso 4 "Ordenar
+    y Descargar" y para el upload directo al admin.
+
+    Returns:
+        list of dicts, each: {
+            "name": brand_name,
+            "products": [
+                {
+                    "url": str,
+                    "title": str,
+                    "image_url": str,
+                    "category": str,
+                    "tags": list[str],         # existing tags (preserved)
+                    "is_trend": bool,
+                },
+                ...
+            ]
+        }
+
+    Args:
+        session: el dict de session del usuario (load_session())
+        country: código ISO del país activo
+        brand_selection_order: lista ordenada de nombres de marca (opcional).
+            Si se provee, las marcas en el resultado respetan ese orden.
+            Si no, se usa el orden de primera aparición en all_products
+            (que coincide con el orden de `active_brands` del usuario).
+
+    Las URLs aprobadas se toman de session["accepted"]. El enriquecimiento
+    (imagen, categoría, tags originales) viene del cache de crawl porque
+    session["accepted"] solo guarda campos slim para ahorrar memoria.
+    """
+    all_products = _get_cached_products(country) or []
+
+    # Mapa url_normalizada → producto crawleado (para O(1) lookup)
+    by_url = {}
+    for p in all_products:
+        by_url[_norm_url(p.get("product_url", ""))] = p
+
+    # Extraer los accepted urls + trend set (mismo patrón que generate_plantilla)
+    accepted_info = {}  # url → {"is_trend": bool}
+    for p in session.get("accepted", []):
+        url = _norm_url(p.get("product_url", ""))
+        accepted_info[url] = {"is_trend": bool(p.get("trend"))}
+
+    # Agrupar por marca preservando orden de primera aparición en all_products
+    brand_groups = {}
+    brand_first_seen_order = []
+    for p in all_products:
+        url = _norm_url(p.get("product_url", ""))
+        if url not in accepted_info:
+            continue  # Solo incluimos productos aprobados
+
+        brand = p.get("brand", "Desconocida")
+        if brand not in brand_groups:
+            brand_groups[brand] = []
+            brand_first_seen_order.append(brand)
+
+        tags = p.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+
+        brand_groups[brand].append({
+            "url": p.get("product_url", ""),
+            "title": p.get("name", "") or p.get("title", ""),
+            "image_url": p.get("image_url", ""),
+            "category": p.get("category", ""),
+            "tags": [_sanitize_cell(t) for t in tags[:4]],
+            "is_trend": accepted_info[url]["is_trend"],
+        })
+
+    # Determinar orden final de marcas
+    if brand_selection_order:
+        ordered_names = [b for b in brand_selection_order if b in brand_groups]
+        extras = [b for b in brand_first_seen_order if b not in brand_selection_order]
+        ordered_names += extras
+    else:
+        ordered_names = brand_first_seen_order
+
+    return [{"name": name, "products": brand_groups[name]} for name in ordered_names]
+
+
+def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
+                       previous_rows=None, brand_order=None, product_order_override=None):
     """Generate moder_plantilla_productos.xlsx — ALL products with Aprobado Si/No column.
+
+    Contrato de columnas (semántica unificada robot ↔ admin ↔ iOS):
+      - Orden      = importancia de la MARCA (1 = más importante). Todos los
+                     productos de una misma marca comparten el mismo valor de Orden.
+                     Mapea a `stores/{id}.order` en Firestore y `StoreModel.order`
+                     en iOS.
+      - Posición   = importancia del PRODUCTO dentro de su marca (1..N). Mapea a
+                     `stores/{id}.products[i].order` en Firestore y
+                     `ProductLink.order` en iOS.
+      - Etiqueta 4 = cuarta etiqueta opcional para filtros de usuaria. Mapea a
+                     `products[i].tag4` en Firestore y `ProductLink.tag4` en iOS.
 
     Args:
         all_products: list of all crawled product dicts
@@ -1899,13 +1994,21 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
         trend_urls: set of URLs marked as trending
         output_path: file path for the xlsx
         previous_rows: list of dicts from a previously uploaded spreadsheet
+        brand_order: optional list of brand names in the desired order of
+                     importance (most important first). If None, uses the
+                     natural order of first-appearance in `all_products`
+                     (preserves robot's active_brands selection order).
+        product_order_override: optional dict {brand_name: [url1, url2, ...]}
+                     that defines the order of products WITHIN each brand.
+                     If None, uses the natural order as products were crawled.
+                     This is populated by Paso 4 "Ordenar y Descargar".
     """
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Productos"
 
     headers = ["Link", "Marca", "Aprobado", "Tendencia", "Orden", "Posición",
-               "Top 20", "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3"]
+               "Top 20", "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3", "Etiqueta 4"]
 
     header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="1C1C1E", end_color="1C1C1E", fill_type="solid")
@@ -1950,6 +2053,7 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
                 9: prev_row.get("Etiqueta 1", ""),
                 10: prev_row.get("Etiqueta 2", ""),
                 11: prev_row.get("Etiqueta 3", ""),
+                12: prev_row.get("Etiqueta 4", ""),
             }
             for c, val in col_map.items():
                 cell = ws.cell(row=row, column=c, value=val if val else "")
@@ -1963,7 +2067,12 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
             row += 1
 
     # ── PART 2: Write ALL new products (not in previous) with Aprobado Si/No
+    #
+    # Paso 1: agrupar productos por marca preservando el orden de primera
+    # aparición (que corresponde al orden en que fueron crawled, que a su vez
+    # respeta el orden de `active_brands` en que el usuario las seleccionó).
     brand_groups = {}
+    brand_first_seen_order = []  # preserva orden de primera aparición
     for p in all_products:
         url = _norm_url(p.get("product_url", ""))
         if url in prev_urls:
@@ -1971,23 +2080,41 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
         brand = p.get("brand", "Desconocida")
         if brand not in brand_groups:
             brand_groups[brand] = []
+            brand_first_seen_order.append(brand)
         brand_groups[brand].append(p)
 
-    # Get next position number from previous rows
-    max_position = 0
-    if previous_rows:
-        for prev_row in previous_rows:
-            pos = prev_row.get("Posición", 0)
-            try:
-                max_position = max(max_position, int(pos))
-            except (ValueError, TypeError):
-                pass
+    # Paso 2: determinar el orden FINAL de las marcas.
+    # Prioridad:
+    #   1. brand_order explícito (viene del Paso 4 "Ordenar y descargar")
+    #   2. orden de primera aparición en all_products (respeta active_brands)
+    if brand_order:
+        # Filtrar solo marcas que realmente tienen productos, preservando el
+        # orden indicado. Marcas extra (no en brand_order) van al final.
+        ordered_brand_names = [b for b in brand_order if b in brand_groups]
+        extras = [b for b in brand_first_seen_order if b not in brand_order]
+        ordered_brand_names += extras
+    else:
+        ordered_brand_names = brand_first_seen_order
 
-    position = max_position + 1
     new_count = 0
-    for brand_name in sorted(brand_groups.keys()):
+    # brand_idx = 1-based rank of the brand in the ordered list (Column "Orden")
+    for brand_idx, brand_name in enumerate(ordered_brand_names, start=1):
         products = brand_groups[brand_name]
-        for idx, p in enumerate(products):
+
+        # Si el Paso 4 pasó un orden de productos dentro de la marca, úsalo.
+        # Si no, preservar orden natural de crawl.
+        if product_order_override and brand_name in product_order_override:
+            url_order = product_order_override[brand_name]
+            # Sort products by index in url_order; unseen URLs go to the end
+            def _rank(p):
+                u = _norm_url(p.get("product_url", ""))
+                try:
+                    return url_order.index(u)
+                except ValueError:
+                    return len(url_order) + 9999
+            products = sorted(products, key=_rank)
+
+        for position_in_brand, p in enumerate(products, start=1):
             url = _norm_url(p.get("product_url", ""))
             is_approved = url in accepted_urls
             is_trend = url in trend_urls
@@ -1999,17 +2126,21 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
             ws.cell(row=row, column=2, value=_sanitize_cell(brand_name)).border = thin_border
             ws.cell(row=row, column=3, value="Si" if is_approved else "No").border = thin_border
             ws.cell(row=row, column=4, value="Si" if is_trend else "No").border = thin_border
-            ws.cell(row=row, column=5, value=idx + 1).border = thin_border
-            ws.cell(row=row, column=6, value=position).border = thin_border
+            # Orden = rank de la MARCA (igual para todos los productos de la marca)
+            ws.cell(row=row, column=5, value=brand_idx).border = thin_border
+            # Posición = rank del PRODUCTO dentro de su marca (1..N)
+            ws.cell(row=row, column=6, value=position_in_brand).border = thin_border
             ws.cell(row=row, column=7, value="No").border = thin_border
             ws.cell(row=row, column=8, value=_sanitize_cell(p.get("category", ""))).border = thin_border
             ws.cell(row=row, column=9, value=_sanitize_cell(tags[0]) if len(tags) > 0 else "").border = thin_border
             ws.cell(row=row, column=10, value=_sanitize_cell(tags[1]) if len(tags) > 1 else "").border = thin_border
             ws.cell(row=row, column=11, value=_sanitize_cell(tags[2]) if len(tags) > 2 else "").border = thin_border
+            # Etiqueta 4 — opcional, se llena en el Paso 4 o manualmente.
+            ws.cell(row=row, column=12, value=_sanitize_cell(tags[3]) if len(tags) > 3 else "").border = thin_border
 
             # Color: green for approved, orange for rejected
             fill = approved_fill if is_approved else rejected_fill
-            for c in range(1, 12):
+            for c in range(1, 13):
                 ws.cell(row=row, column=c).fill = fill
 
             ws.cell(row=row, column=1).hyperlink = p.get("product_url", "")
@@ -2018,14 +2149,13 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path, pre
 
             row += 1
             new_count += 1
-            position += 1
 
-    # Column widths
-    widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15]
+    # Column widths — agregamos columna 12 (Etiqueta 4)
+    widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15, 15]
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
 
-    ws.auto_filter.ref = f"A1:K{row - 1}"
+    ws.auto_filter.ref = f"A1:L{row - 1}"
     ws.freeze_panes = "A2"
 
     # Save to disk
@@ -2730,8 +2860,20 @@ def action():
                 trend_urls.add(url)
 
         print(f"📊 FINISH: user={uid}, total={len(all_products)}, approved={len(accepted_urls)}, trends={len(trend_urls)}, previous={len(previous_rows)}")
+        # brand_order = orden de importancia de las marcas según la selección
+        # del usuario en active_brands. Esto hace que el Excel respete la
+        # prioridad original en vez de ordenar alfabéticamente.
+        _brand_order_from_selection = [b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")]
+        # product_order_override se puebla solo si el usuario pasó por
+        # Paso 4 "Ordenar y descargar". Si no, es None y se usa el orden natural.
+        _product_order_override = session.get("product_order_override") or None
         try:
-            _, xlsx_buffer = generate_plantilla(all_products, accepted_urls, trend_urls, output_path, previous_rows=previous_rows)
+            _, xlsx_buffer = generate_plantilla(
+                all_products, accepted_urls, trend_urls, output_path,
+                previous_rows=previous_rows,
+                brand_order=_brand_order_from_selection,
+                product_order_override=_product_order_override,
+            )
             with _global_cache_lock:
                 if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
                     oldest = next(iter(generated_xlsx_per_user))
@@ -2792,7 +2934,14 @@ def download():
             previous_rows = session.get("previous_rows", [])
             accepted_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []))
             trend_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []) if p.get("trend"))
-            _, xlsx_buffer = generate_plantilla(all_products, accepted_urls, trend_urls, path, previous_rows=previous_rows)
+            _brand_order_from_selection = [b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")]
+            _product_order_override = session.get("product_order_override") or None
+            _, xlsx_buffer = generate_plantilla(
+                all_products, accepted_urls, trend_urls, path,
+                previous_rows=previous_rows,
+                brand_order=_brand_order_from_selection,
+                product_order_override=_product_order_override,
+            )
             with _global_cache_lock:
                 if len(generated_xlsx_per_user) >= _XLSX_CACHE_MAX:
                     oldest = next(iter(generated_xlsx_per_user))
@@ -2813,6 +2962,272 @@ def download():
             return f"<html><body><h2>Error al generar planilla</h2><p>{html_mod.escape(str(e))}</p><a href='/'>Volver</a></body></html>", 500
 
     return "<html><body><h2>No se ha generado la planilla aún</h2><p>Primero acepta productos y presiona Finalizar.</p><a href='/'>Volver al inicio</a></body></html>", 404
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PASO 4: "Ordenar y Descargar" — visualizador con flechas ↑↓ para reordenar
+# marcas y productos antes de generar la planilla o subir al admin.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/order")
+@login_required
+def order_view():
+    """Muestra la UI del Paso 4: reordenar marcas aprobadas y sus productos."""
+    session = load_session()
+    country = load_active_country()
+
+    # Determinar el orden inicial de marcas: preferir un override previo que el
+    # user haya guardado antes (si entra y sale de /order sin descargar), o el
+    # orden de selección de active_brands como fallback inicial.
+    prior_brand_order = session.get("brand_order_override")
+    if not prior_brand_order:
+        prior_brand_order = [b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")]
+
+    brands = build_curated_brands_for_ordering(
+        session, country, brand_selection_order=prior_brand_order
+    )
+
+    # Si hay un product_order_override previo, aplicarlo dentro de cada marca
+    product_order_override = session.get("product_order_override") or {}
+    if product_order_override:
+        for b in brands:
+            desired = product_order_override.get(b["name"])
+            if not desired:
+                continue
+            # Re-ordenar preservando el índice en `desired`. Productos nuevos
+            # (no vistos en el override anterior) van al final.
+            def _rank(p, order_list=desired):
+                try:
+                    return order_list.index(_norm_url(p["url"]))
+                except ValueError:
+                    return len(order_list) + 9999
+            b["products"].sort(key=_rank)
+
+    # Si también hay overrides de tags por producto, aplicarlos
+    tag_overrides = session.get("product_tag_overrides") or {}
+    for b in brands:
+        for p in b["products"]:
+            key = _norm_url(p["url"])
+            if key in tag_overrides:
+                p["tags"] = tag_overrides[key]
+
+    total_products = sum(len(b["products"]) for b in brands)
+    return render_template(
+        "order.html",
+        brands=brands,
+        brand_count=len(brands),
+        total_products=total_products,
+    )
+
+
+@app.route("/save_order", methods=["POST"])
+@login_required
+def save_order():
+    """Persiste el orden visual del Paso 4 en la session.
+
+    Payload JSON esperado:
+      {
+        "brand_order": ["Marca A", "Marca B", ...],
+        "product_order": {
+            "Marca A": ["https://url1", "https://url2", ...],
+            "Marca B": [...]
+        },
+        "tags": {
+            "https://url1": ["etiqueta1", "etiqueta2", "etiqueta3", "etiqueta4"],
+            ...
+        }
+      }
+
+    Estos overrides se leen por `generate_plantilla` y por `upload_to_admin`
+    cuando se construye la salida final. No se mezclan con los datos de crawl
+    originales; son una "capa de curación" que vive solo en la session.
+    """
+    data = request.get_json(silent=True) or {}
+    brand_order = data.get("brand_order") or []
+    product_order = data.get("product_order") or {}
+    tags = data.get("tags") or {}
+
+    if not isinstance(brand_order, list):
+        return jsonify({"status": "error", "error": "brand_order debe ser lista"}), 400
+    if not isinstance(product_order, dict):
+        return jsonify({"status": "error", "error": "product_order debe ser dict"}), 400
+    if not isinstance(tags, dict):
+        return jsonify({"status": "error", "error": "tags debe ser dict"}), 400
+
+    # Normalizar URLs para que la clave sea idéntica a la usada en
+    # generate_plantilla (que compara con _norm_url).
+    normalized_product_order = {}
+    for brand, urls in product_order.items():
+        if not isinstance(urls, list):
+            continue
+        normalized_product_order[brand] = [_norm_url(u) for u in urls if isinstance(u, str)]
+
+    normalized_tags = {}
+    for url, tag_list in tags.items():
+        if not isinstance(tag_list, list):
+            continue
+        # Máximo 4 tags, trim, descartar vacíos
+        cleaned = [str(t).strip() for t in tag_list[:4]]
+        normalized_tags[_norm_url(url)] = cleaned
+
+    session = load_session()
+    session["brand_order_override"] = [str(b) for b in brand_order]
+    session["product_order_override"] = normalized_product_order
+    session["product_tag_overrides"] = normalized_tags
+    save_session(session)
+
+    return jsonify({
+        "status": "ok",
+        "brands": len(brand_order),
+        "product_brands": len(normalized_product_order),
+        "tagged_products": len(normalized_tags),
+    })
+
+
+@app.route("/upload_to_admin", methods=["POST"])
+@login_required
+def upload_to_admin():
+    """Escribe las marcas curadas directamente a Firestore (collection `stores`)
+    usando el SDK que el robot ya tiene cargado via firestore_storage.py.
+
+    Este endpoint respeta los overrides del Paso 4 (brand order, product order,
+    tags) si existen en la session. Si no, usa el orden natural de crawl.
+
+    Merge policy: REEMPLAZO COMPLETO por store_id. Si `stores/{id}` ya existe
+    en Firestore, se sobrescribe con el nuevo payload. Confirmado con el user
+    en el checkpoint del 11 abril 2026.
+    """
+    session = load_session()
+    country = load_active_country()
+    uid = get_user_id()
+
+    # Brand order: prefer override from Paso 4, fallback a active_brands.
+    brand_order = session.get("brand_order_override") or [
+        b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")
+    ]
+
+    brands = build_curated_brands_for_ordering(
+        session, country, brand_selection_order=brand_order
+    )
+
+    if not brands:
+        return jsonify({
+            "status": "error",
+            "error": "No hay marcas curadas para subir. Aprueba productos primero."
+        }), 400
+
+    # Apply product order override within each brand
+    product_order_override = session.get("product_order_override") or {}
+    for b in brands:
+        desired = product_order_override.get(b["name"])
+        if not desired:
+            continue
+        def _rank(p, order_list=desired):
+            try:
+                return order_list.index(_norm_url(p["url"]))
+            except ValueError:
+                return len(order_list) + 9999
+        b["products"].sort(key=_rank)
+
+    # Apply tag overrides
+    tag_overrides = session.get("product_tag_overrides") or {}
+    for b in brands:
+        for p in b["products"]:
+            key = _norm_url(p["url"])
+            if key in tag_overrides:
+                p["tags"] = tag_overrides[key]
+
+    # Firestore write via firestore_storage helper (already imported).
+    # Uso `_get_db` porque es el handle único que la app ya usa para persistir
+    # session/brands/cache. Si no está inicializado (por ejemplo porque
+    # FIREBASE_SERVICE_ACCOUNT no está en el env), devuelve None y retornamos
+    # un error explícito para que el admin use el flujo manual de Excel.
+    try:
+        from firestore_storage import _get_db
+    except ImportError:
+        return jsonify({
+            "status": "error",
+            "error": "firestore_storage no disponible en esta instancia del robot."
+        }), 500
+
+    db = _get_db()
+    if db is None:
+        return jsonify({
+            "status": "error",
+            "error": "Firestore no configurado en el robot. Usa el botón 'Descargar planilla' y súbela manualmente al admin."
+        }), 500
+
+    # Build and write each store. batch para atomicidad.
+    from google.cloud.firestore_v1 import SERVER_TIMESTAMP  # type: ignore
+    batch = db.batch()
+    now_ts = SERVER_TIMESTAMP
+    stores_collection = db.collection("stores")
+
+    written_stores = []
+    total_products = 0
+    for brand_idx, b in enumerate(brands, start=1):
+        brand_name = b["name"]
+        # store_id estable: slug de marca + país (e.g. "manto_silvestre_cl")
+        slug = "".join(c if c.isalnum() else "_" for c in brand_name.lower()).strip("_")
+        store_id = f"{slug}_{country.lower()}"
+
+        products_payload = []
+        for pos_in_brand, p in enumerate(b["products"], start=1):
+            tags_clean = [str(t).strip() for t in (p.get("tags") or []) if str(t).strip()]
+            # Pad tags a 4 posiciones para un schema consistente
+            while len(tags_clean) < 4:
+                tags_clean.append("")
+
+            products_payload.append({
+                "id": f"{store_id}_p{pos_in_brand}",
+                "url": p.get("url", ""),
+                "imageURL": p.get("image_url", ""),
+                "title": p.get("title", ""),
+                "order": pos_in_brand,          # orden del producto dentro del store
+                "country": country,
+                "isTop20": False,
+                "isTrend": bool(p.get("is_trend")),
+                "category": p.get("category", ""),
+                "tag1": tags_clean[0],
+                "tag2": tags_clean[1],
+                "tag3": tags_clean[2],
+                "tag4": tags_clean[3],
+                "tags": [t for t in tags_clean if t],
+            })
+
+        store_doc = {
+            "name": brand_name,
+            "products": products_payload,
+            "isActive": True,
+            "order": brand_idx,                 # rank de la marca (importancia)
+            "country": country,
+            "updatedAt": now_ts,
+            "updatedBy": f"robot_{uid}",
+        }
+
+        doc_ref = stores_collection.document(store_id)
+        # Merge policy: reemplazo completo del doc (set sin merge).
+        # Si existe, se sobrescribe. Si no, se crea.
+        batch.set(doc_ref, store_doc)
+        written_stores.append(store_id)
+        total_products += len(products_payload)
+
+    try:
+        batch.commit()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "error": f"Firestore batch commit falló: {str(e)[:200]}"
+        }), 500
+
+    return jsonify({
+        "status": "ok",
+        "stores": len(written_stores),
+        "products": total_products,
+        "store_ids": written_stores,
+    })
 
 
 @app.route("/cancel-curation", methods=["POST"])

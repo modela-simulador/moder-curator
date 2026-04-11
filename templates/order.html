@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#fafafa">
+    <title>MODÈR Curator — Paso 4: Ordenar</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fafafa; color: #1c1c1e; min-height: 100vh; }
+        .container { max-width: 980px; margin: 0 auto; padding: 32px 24px 160px; }
+
+        .header { margin-bottom: 24px; }
+        .title { font-family: 'Times New Roman', serif; font-size: 32px; letter-spacing: 4px; margin-bottom: 6px; }
+        .step { font-size: 11px; letter-spacing: 2px; color: #999; text-transform: uppercase; }
+        .subtitle { font-size: 14px; color: #666; margin-top: 8px; line-height: 1.5; }
+        .stats { display: flex; gap: 24px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #e5e5e5; }
+        .stat { font-size: 13px; color: #666; }
+        .stat strong { color: #1c1c1e; font-size: 20px; font-weight: 700; display: block; }
+
+        .brand-card { background: white; border: 1px solid #e5e5e5; border-radius: 16px; margin-bottom: 16px; overflow: hidden; transition: box-shadow 0.2s; }
+        .brand-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.04); }
+
+        .brand-header { display: flex; align-items: center; gap: 12px; padding: 18px 20px; cursor: pointer; user-select: none; }
+        .brand-rank { font-family: 'Times New Roman', serif; font-size: 24px; font-weight: 700; color: #1c1c1e; min-width: 36px; text-align: center; }
+        .brand-name { flex: 1; font-size: 17px; font-weight: 600; letter-spacing: 0.5px; }
+        .brand-count { font-size: 12px; color: #888; padding: 4px 10px; background: #f0f0f0; border-radius: 12px; }
+        .brand-toggle { font-size: 18px; color: #888; transition: transform 0.2s; padding: 6px 10px; }
+        .brand-card.expanded .brand-toggle { transform: rotate(90deg); }
+
+        .move-btn {
+            background: #f5f5f5; border: 1px solid #e0e0e0; width: 32px; height: 32px;
+            border-radius: 8px; cursor: pointer; display: flex; align-items: center;
+            justify-content: center; font-size: 14px; color: #555; transition: all 0.15s;
+            font-weight: 600;
+        }
+        .move-btn:hover:not(:disabled) { background: #1c1c1e; color: white; border-color: #1c1c1e; }
+        .move-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        .brand-actions { display: flex; gap: 6px; }
+
+        .brand-body { display: none; padding: 0 20px 20px; border-top: 1px solid #f0f0f0; }
+        .brand-card.expanded .brand-body { display: block; }
+
+        .product-list { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+        .product-row { display: flex; gap: 14px; padding: 14px; background: #fafafa; border: 1px solid #eee; border-radius: 12px; align-items: flex-start; }
+        .product-pos { font-size: 13px; color: #888; font-weight: 600; min-width: 28px; text-align: center; padding-top: 28px; }
+
+        /* Imagen del producto: un wrapper con el placeholder detrás. Si la
+           img carga OK, tapa el placeholder; si falla, on-error la ocultamos
+           con CSS y queda visible el texto "sin imagen". Esto evita usar
+           innerHTML para cambiar contenido en JS (anti-XSS hygiene). */
+        .product-img-wrap {
+            width: 88px; height: 88px; border-radius: 8px; background: #e5e5e5;
+            display: flex; align-items: center; justify-content: center;
+            color: #aaa; font-size: 11px; flex-shrink: 0; position: relative;
+            overflow: hidden;
+        }
+        .product-img-wrap img {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: cover; display: block;
+        }
+        .product-img-wrap img.broken { display: none; }
+
+        .product-info { flex: 1; min-width: 0; }
+        .product-title { font-size: 13px; font-weight: 600; color: #1c1c1e; line-height: 1.4; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .product-meta { font-size: 11px; color: #888; margin-bottom: 8px; }
+        .product-tags { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .tag-input {
+            font-size: 11px; padding: 6px 8px; border: 1px solid #e0e0e0; border-radius: 6px;
+            background: white; width: 100%; font-family: inherit; color: #1c1c1e;
+            transition: border-color 0.15s;
+        }
+        .tag-input:focus { outline: none; border-color: #1c1c1e; }
+        .tag-input::placeholder { color: #c5c5c5; }
+
+        .product-actions { display: flex; flex-direction: column; gap: 6px; padding-top: 28px; }
+
+        .trend-badge {
+            display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: 1px;
+            background: #1c1c1e; color: white; padding: 3px 6px; border-radius: 4px;
+            margin-left: 6px; vertical-align: middle; text-transform: uppercase;
+        }
+
+        .empty-state { text-align: center; padding: 60px 20px; color: #888; }
+
+        .footer {
+            position: fixed; bottom: 0; left: 0; right: 0; background: white;
+            border-top: 1px solid #e5e5e5; padding: 16px 24px; z-index: 100;
+            box-shadow: 0 -4px 12px rgba(0,0,0,0.04);
+        }
+        .footer-inner { max-width: 980px; margin: 0 auto; display: flex; gap: 10px; justify-content: flex-end; align-items: center; flex-wrap: wrap; }
+        .footer-note { flex: 1; font-size: 12px; color: #888; }
+        .btn {
+            padding: 14px 24px; border-radius: 30px; font-size: 14px; font-weight: 600;
+            cursor: pointer; border: none; transition: all 0.2s; font-family: inherit;
+            display: inline-flex; align-items: center; gap: 8px;
+        }
+        .btn-primary { background: #1c1c1e; color: white; }
+        .btn-primary:hover:not(:disabled) { background: #000; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-secondary { background: white; color: #1c1c1e; border: 1.5px solid #ccc; }
+        .btn-secondary:hover { border-color: #1c1c1e; }
+
+        .toast {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            padding: 12px 20px; border-radius: 24px; font-size: 13px; font-weight: 500;
+            z-index: 200; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+            max-width: 90%; text-align: center;
+        }
+        .toast.show { opacity: 1; }
+        .toast.success { background: #1c1c1e; color: white; }
+        .toast.error { background: #c25b4a; color: white; }
+
+        @media (max-width: 600px) {
+            .container { padding: 24px 16px 180px; }
+            .title { font-size: 26px; letter-spacing: 3px; }
+            .brand-name { font-size: 15px; }
+            .product-img-wrap { width: 72px; height: 72px; }
+            .product-title { font-size: 12px; }
+            .product-tags { grid-template-columns: 1fr; }
+            .product-row { gap: 10px; padding: 12px; }
+            .footer { padding: 12px 16px; }
+            .footer-inner { gap: 8px; }
+            .footer-note { display: none; }
+            .btn { padding: 12px 18px; font-size: 13px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="step">Paso 4 de 4</div>
+            <h1 class="title">Ordenar y Descargar</h1>
+            <p class="subtitle">Ordena las marcas de más a menos importante. Dentro de cada marca puedes reordenar los productos y agregar hasta 4 etiquetas para filtros.</p>
+            <div class="stats">
+                <div class="stat"><strong>{{ brand_count }}</strong>Marcas aprobadas</div>
+                <div class="stat"><strong>{{ total_products }}</strong>Productos curados</div>
+            </div>
+        </div>
+
+        {% if brand_count == 0 %}
+        <div class="empty-state">
+            <p>No hay productos aprobados todavía.</p>
+            <a href="/" class="btn btn-secondary" style="margin-top: 16px">← Volver al inicio</a>
+        </div>
+        {% else %}
+        <div id="brands-container">
+            {% for brand in brands %}
+            <div class="brand-card" data-brand-name="{{ brand.name|e }}">
+                <div class="brand-header" onclick="toggleBrand(this)">
+                    <div class="brand-rank">{{ loop.index }}</div>
+                    <div class="brand-name">{{ brand.name }}</div>
+                    <div class="brand-count">{{ brand.products|length }} productos</div>
+                    <div class="brand-actions">
+                        <button class="move-btn" onclick="event.stopPropagation(); moveBrand(this, -1)" title="Subir">▲</button>
+                        <button class="move-btn" onclick="event.stopPropagation(); moveBrand(this, 1)" title="Bajar">▼</button>
+                    </div>
+                    <div class="brand-toggle">▸</div>
+                </div>
+                <div class="brand-body">
+                    <div class="product-list">
+                        {% for product in brand.products %}
+                        <div class="product-row" data-product-url="{{ product.url|e }}">
+                            <div class="product-pos">{{ loop.index }}</div>
+                            <div class="product-img-wrap">
+                                <span>sin imagen</span>
+                                {% if product.image_url %}
+                                <img src="{{ product.image_url|e }}" alt="" loading="lazy" onerror="this.classList.add('broken')">
+                                {% endif %}
+                            </div>
+                            <div class="product-info">
+                                <div class="product-title">
+                                    {{ product.title or '(sin título)' }}
+                                    {% if product.is_trend %}<span class="trend-badge">TEND.</span>{% endif %}
+                                </div>
+                                <div class="product-meta">{{ product.category or 'Sin categoría' }}</div>
+                                <div class="product-tags">
+                                    <input type="text" class="tag-input" data-tag="0" placeholder="Etiqueta 1" value="{{ product.tags[0] if product.tags|length > 0 else '' }}">
+                                    <input type="text" class="tag-input" data-tag="1" placeholder="Etiqueta 2" value="{{ product.tags[1] if product.tags|length > 1 else '' }}">
+                                    <input type="text" class="tag-input" data-tag="2" placeholder="Etiqueta 3" value="{{ product.tags[2] if product.tags|length > 2 else '' }}">
+                                    <input type="text" class="tag-input" data-tag="3" placeholder="Etiqueta 4" value="{{ product.tags[3] if product.tags|length > 3 else '' }}">
+                                </div>
+                            </div>
+                            <div class="product-actions">
+                                <button class="move-btn" onclick="moveProduct(this, -1)" title="Subir">▲</button>
+                                <button class="move-btn" onclick="moveProduct(this, 1)" title="Bajar">▼</button>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    {% if brand_count > 0 %}
+    <div class="footer">
+        <div class="footer-inner">
+            <div class="footer-note">Los cambios se guardan al presionar cualquier botón.</div>
+            <a href="/" class="btn btn-secondary">Cancelar</a>
+            <button class="btn btn-secondary" onclick="saveAndDownload(this)">📥 Descargar planilla</button>
+            <button class="btn btn-primary" onclick="saveAndUpload(this)">☁️ Subir al admin</button>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ── UI expand/collapse ──
+        function toggleBrand(header) {
+            header.closest('.brand-card').classList.toggle('expanded');
+            refreshMoveButtons();
+        }
+
+        // ── Reorder de marcas ──
+        function moveBrand(btn, direction) {
+            const card = btn.closest('.brand-card');
+            const container = card.parentNode;
+            const sibling = direction < 0 ? card.previousElementSibling : card.nextElementSibling;
+            if (!sibling || !sibling.classList.contains('brand-card')) return;
+            if (direction < 0) container.insertBefore(card, sibling);
+            else container.insertBefore(sibling, card);
+            updateBrandRanks();
+            refreshMoveButtons();
+        }
+
+        function updateBrandRanks() {
+            const cards = document.querySelectorAll('#brands-container .brand-card');
+            cards.forEach((card, idx) => {
+                const rank = card.querySelector('.brand-rank');
+                if (rank) rank.textContent = idx + 1;
+            });
+        }
+
+        // ── Reorder de productos dentro de una marca ──
+        function moveProduct(btn, direction) {
+            const row = btn.closest('.product-row');
+            const list = row.parentNode;
+            const sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+            if (!sibling || !sibling.classList.contains('product-row')) return;
+            if (direction < 0) list.insertBefore(row, sibling);
+            else list.insertBefore(sibling, row);
+            updateProductPositions(list);
+            refreshMoveButtons();
+        }
+
+        function updateProductPositions(list) {
+            list.querySelectorAll('.product-row').forEach((row, idx) => {
+                const pos = row.querySelector('.product-pos');
+                if (pos) pos.textContent = idx + 1;
+            });
+        }
+
+        function refreshMoveButtons() {
+            document.querySelectorAll('#brands-container .brand-card').forEach((card, idx, all) => {
+                const [up, down] = card.querySelectorAll('.brand-header .move-btn');
+                if (up) up.disabled = (idx === 0);
+                if (down) down.disabled = (idx === all.length - 1);
+            });
+            document.querySelectorAll('.product-list').forEach(list => {
+                const rows = list.querySelectorAll('.product-row');
+                rows.forEach((row, idx) => {
+                    const btns = row.querySelectorAll('.product-actions .move-btn');
+                    if (btns[0]) btns[0].disabled = (idx === 0);
+                    if (btns[1]) btns[1].disabled = (idx === rows.length - 1);
+                });
+            });
+        }
+
+        // ── Captura del estado actual para el backend ──
+        function capturePayload() {
+            const brand_order = [];
+            const product_order = {};
+            const tags = {};
+
+            document.querySelectorAll('#brands-container .brand-card').forEach(card => {
+                const brand = card.dataset.brandName;
+                brand_order.push(brand);
+                const urls = [];
+                card.querySelectorAll('.product-row').forEach(row => {
+                    const url = row.dataset.productUrl;
+                    urls.push(url);
+                    const tagInputs = row.querySelectorAll('.tag-input');
+                    const tagList = [];
+                    tagInputs.forEach(inp => tagList.push(inp.value || ''));
+                    tags[url] = tagList;
+                });
+                product_order[brand] = urls;
+            });
+
+            return { brand_order, product_order, tags };
+        }
+
+        // ── Toast helper ──
+        function showToast(msg, type = 'success') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show ' + type;
+            setTimeout(() => t.classList.remove('show'), 3500);
+        }
+
+        async function saveOrder() {
+            const payload = capturePayload();
+            const res = await fetch('/save_order', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || 'Error al guardar orden');
+            }
+            return res.json();
+        }
+
+        async function saveAndDownload(btn) {
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Guardando...';
+            try {
+                await saveOrder();
+                btn.textContent = 'Generando...';
+                const resp = await fetch('/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'finish' }),
+                });
+                const data = await resp.json();
+                if (data.status === 'error') throw new Error(data.error || 'Error al generar');
+
+                const a = document.createElement('a');
+                a.href = '/download';
+                a.download = 'moder_plantilla_productos.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                showToast('Planilla descargada con el orden que elegiste');
+                btn.textContent = originalText;
+                btn.disabled = false;
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        async function saveAndUpload(btn) {
+            if (!confirm('Esto va a REEMPLAZAR las marcas actuales en el admin con las que acabas de curar. ¿Continuar?')) return;
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Guardando...';
+            try {
+                await saveOrder();
+                btn.textContent = 'Subiendo al admin...';
+                const resp = await fetch('/upload_to_admin', { method: 'POST' });
+                const data = await resp.json();
+                if (data.status !== 'ok') throw new Error(data.error || 'Error al subir');
+                showToast('Listo: ' + data.stores + ' tiendas, ' + data.products + ' productos en el admin');
+                btn.textContent = originalText;
+                btn.disabled = false;
+            } catch (e) {
+                showToast('Error: ' + e.message, 'error');
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshMoveButtons();
+        });
+    </script>
+</body>
+</html>

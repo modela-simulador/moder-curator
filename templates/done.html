@@ -43,7 +43,15 @@
         <div class="stat">{{ accepted_count }}</div>
         <div class="stat-label">productos aprobados de {{ total }} revisados</div>
 
-        <button onclick="generateAndDownload(this)" class="btn btn-primary">📥 Generar y descargar planilla</button><br>
+        <!--
+            Paso 4 nuevo: lleva al visualizador /order donde el usuario reordena
+            marcas y productos, agrega etiquetas, y elige entre descargar la
+            planilla o subir directo al admin. El botón viejo queda como opción
+            secundaria "Descargar directo" para usuarios que quieran saltarse
+            el paso de ordenamiento.
+        -->
+        <a href="/order" class="btn btn-primary">➜ Paso 4: Ordenar y Descargar</a><br>
+        <button onclick="generateAndDownload(this)" class="btn btn-secondary">Descargar directo (sin ordenar)</button><br>
         <a href="/" class="btn btn-secondary">← Volver al inicio</a>
     </div>
     <script>
