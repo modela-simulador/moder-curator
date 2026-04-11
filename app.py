@@ -2860,12 +2860,17 @@ def action():
                 trend_urls.add(url)
 
         print(f"📊 FINISH: user={uid}, total={len(all_products)}, approved={len(accepted_urls)}, trends={len(trend_urls)}, previous={len(previous_rows)}")
-        # brand_order = orden de importancia de las marcas según la selección
-        # del usuario en active_brands. Esto hace que el Excel respete la
-        # prioridad original en vez de ordenar alfabéticamente.
-        _brand_order_from_selection = [b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")]
-        # product_order_override se puebla solo si el usuario pasó por
-        # Paso 4 "Ordenar y descargar". Si no, es None y se usa el orden natural.
+        # brand_order: PRIORIDAD al override que el usuario eligió en el Paso 4
+        # (guardado en session["brand_order_override"] por /save_order). Si no
+        # hay override (user descargó directo sin pasar por Paso 4), fallback a
+        # la selección original de active_brands.
+        #
+        # Fix (11 abril 2026) — antes esta línea SIEMPRE leía active_brands y
+        # ignoraba el override, causando que el Excel generado desde el botón
+        # "Descargar planilla" del Paso 4 respetara Posición pero NO Orden.
+        _brand_order_from_selection = session.get("brand_order_override") or [
+            b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")
+        ]
         _product_order_override = session.get("product_order_override") or None
         try:
             _, xlsx_buffer = generate_plantilla(
@@ -2934,7 +2939,10 @@ def download():
             previous_rows = session.get("previous_rows", [])
             accepted_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []))
             trend_urls = set(_norm_url(p.get("product_url", "")) for p in session.get("accepted", []) if p.get("trend"))
-            _brand_order_from_selection = [b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")]
+            # Fix (11 abril 2026) — respetar brand_order_override del Paso 4
+            _brand_order_from_selection = session.get("brand_order_override") or [
+                b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")
+            ]
             _product_order_override = session.get("product_order_override") or None
             _, xlsx_buffer = generate_plantilla(
                 all_products, accepted_urls, trend_urls, path,
