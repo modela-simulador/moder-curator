@@ -3468,15 +3468,22 @@ def upload_to_admin():
         _new_store_ids.add(store_id)
         _new_brand_name_lower_to_id[b["name"].strip().lower()] = store_id
 
-    # Scan completo para detectar docs a borrar. Tres criterios de match
-    # (union):
+    # Scan completo para detectar docs a borrar. CUATRO criterios (union):
     #   A. `country == país activo`  → match explícito
-    #   B. doc_id termina en `_<país>` y no tiene country → legacy por sufijo
+    #   B. doc_id termina en `_<país activo>` y no tiene country → legacy
+    #      con sufijo del mismo país
     #   C. el `name` del doc coincide (case-insensitive) con una marca que
     #      estamos reescribiendo, pero el doc_id NO matchea el slug nuevo
     #      → legacy con slug malformado (ej: "antonia_flux_cl" cuando el
-    #      nuevo es "antonia_fluxa_cl"). Este criterio es el que detecta
-    #      docs paralelos creados por versiones viejas del slug generator.
+    #      nuevo es "antonia_fluxa_cl")
+    #   D. **Criterio huérfano absoluto** (agregado 12 abril noche 2):
+    #      doc NO tiene `country` field Y doc_id NO termina en ningún sufijo
+    #      de país conocido (`_ar|_cl|_co|_mx|_es`). Son docs de un schema
+    #      muy viejo (antes de que hubiera convención de país) que quedaron
+    #      colgados para siempre — ej: `manto-silvestre`, `carolina-flores`,
+    #      `arde`, `parsome`. Estos NO pertenecen a ningún país, son tests
+    #      históricos. Los borramos en cualquier upload que tenga country.
+    KNOWN_COUNTRY_SUFFIXES = ("_ar", "_cl", "_co", "_mx", "_es")
     stores_to_delete = []
     country_lower = country.lower()
     country_suffix = f"_{country_lower}"
@@ -3494,9 +3501,6 @@ def upload_to_admin():
             doc_name_lower = doc_name.lower()
 
             # Criterio C: match por nombre (resuelve slugs inconsistentes)
-            # Si el doc tiene el mismo nombre que una marca que vamos a
-            # reescribir, lo marcamos para delete — el nuevo slug va a
-            # reemplazarlo (con id distinto) pero sin dejar el viejo huérfano.
             if doc_name_lower in _new_brand_name_lower_to_id:
                 stores_to_delete.append(doc_id)
                 continue
@@ -3506,12 +3510,20 @@ def upload_to_admin():
                 stores_to_delete.append(doc_id)
                 continue
 
-            # Criterio B: legacy con sufijo de país y sin country field
+            # Criterio B: legacy con sufijo del país activo y sin country field
             if not doc_country and doc_id.endswith(country_suffix):
                 stores_to_delete.append(doc_id)
                 continue
 
-            # Docs de otro país o que no encajan ningún criterio → NO tocar
+            # Criterio D: huérfano absoluto (sin country + sin ningún sufijo
+            # de país conocido) → legacy inequívoco → borrar.
+            if not doc_country and not any(
+                doc_id.endswith(suf) for suf in KNOWN_COUNTRY_SUFFIXES
+            ):
+                stores_to_delete.append(doc_id)
+                continue
+
+            # Docs de otro país (ej: country=AR mientras subimos CL) → NO tocar
     except Exception as _list_err:
         # Si el scan completo falla (inusual), abortamos el delete para no
         # borrar algo que no deberíamos. El upload sigue pero solo sobrescribe.
@@ -3630,6 +3642,72 @@ def debug_version():
         "service_id": service_id,
         "server_time": _dt.datetime.utcnow().isoformat() + "Z",
         "expected_fix_commit": "527bed4",
+    })
+
+
+@app.route("/debug/sweep_legacy_ghosts", methods=["POST", "GET"])
+def debug_sweep_legacy_ghosts():
+    """Limpia docs huérfanos de `stores/` sin necesidad de re-subir marcas.
+
+    Aplica SOLO el Criterio D: docs sin `country` field y sin sufijo
+    de ningún país conocido (`_ar|_cl|_co|_mx|_es`). Estos son legacy
+    inequívocos de un schema muy viejo.
+
+    Query param `dry=1` → NO commitea, solo devuelve qué borraría.
+    Sin dry → borra de verdad.
+
+    Público (sin auth) porque es una operación de limpieza que el
+    criterio de match es muy conservador (solo docs sin país + sin sufijo).
+    """
+    try:
+        from firestore_storage import _get_db
+    except ImportError:
+        return jsonify({"error": "firestore_storage no disponible"}), 500
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore no configurado"}), 500
+
+    dry = request.args.get("dry", "").lower() in ("1", "true", "yes")
+    KNOWN_COUNTRY_SUFFIXES = ("_ar", "_cl", "_co", "_mx", "_es")
+
+    stores_collection = db.collection("stores")
+    ghosts = []
+    try:
+        for doc in stores_collection.stream():
+            data = doc.to_dict() or {}
+            doc_country = data.get("country", "")
+            if doc_country:
+                continue  # tiene país → NO es huérfano
+            if any(doc.id.endswith(suf) for suf in KNOWN_COUNTRY_SUFFIXES):
+                continue  # tiene sufijo de país → NO es huérfano
+            ghosts.append({
+                "id": doc.id,
+                "name": str(data.get("name", "")),
+                "products": len(data.get("products") or []),
+            })
+    except Exception as _err:
+        return jsonify({"error": f"scan falló: {_err}"}), 500
+
+    if dry:
+        return jsonify({
+            "dry_run": True,
+            "would_delete": len(ghosts),
+            "ghosts": ghosts,
+        })
+
+    # Delete real en batch
+    batch = db.batch()
+    for g in ghosts:
+        batch.delete(stores_collection.document(g["id"]))
+    try:
+        batch.commit()
+    except Exception as e:
+        return jsonify({"error": f"batch commit falló: {e}"}), 500
+
+    return jsonify({
+        "dry_run": False,
+        "deleted": len(ghosts),
+        "ghosts": ghosts,
     })
 
 
@@ -3755,6 +3833,7 @@ def debug_dry_run_upload():
 
     country_lower = country.lower()
     country_suffix = f"_{country_lower}"
+    KNOWN_COUNTRY_SUFFIXES = ("_ar", "_cl", "_co", "_mx", "_es")
 
     to_delete = []
     to_rewrite = []
@@ -3798,9 +3877,16 @@ def debug_dry_run_upload():
                 to_delete.append({**entry, "reason": "criterion_A_country_field"})
                 continue
 
-            # Criterio B: sufijo + sin country
+            # Criterio B: sufijo del país activo + sin country
             if not doc_country and doc_id.endswith(country_suffix):
                 to_delete.append({**entry, "reason": "criterion_B_suffix_no_country"})
+                continue
+
+            # Criterio D: huérfano absoluto
+            if not doc_country and not any(
+                doc_id.endswith(suf) for suf in KNOWN_COUNTRY_SUFFIXES
+            ):
+                to_delete.append({**entry, "reason": "criterion_D_orphan_legacy"})
                 continue
 
             untouched.append(entry)
