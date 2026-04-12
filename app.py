@@ -3416,48 +3416,124 @@ def upload_to_admin():
     stores_collection = db.collection("stores")
 
     # ── Merge policy: REEMPLAZO COMPLETO DE COLECCIÓN POR PAÍS ──
-    # Fix (12 abril 2026) — el comportamiento anterior hacía batch.set por
-    # store_id, lo cual sobrescribía los stores del upload actual pero dejaba
-    # intactas las tiendas viejas de uploads anteriores. Eso generaba un
-    # merge-implícito al nivel de colección.
     #
-    # Ahora: borramos TODAS las tiendas del país activo antes de escribir las
-    # nuevas. Resultado: al final del batch commit, Firestore tiene SOLO las
-    # tiendas del curado actual, nada más.
+    # Fix original (12 abril 2026): borramos TODAS las tiendas del país antes
+    # de escribir las nuevas, para que no queden "fantasma" acumuladas.
+    #
+    # Fix v2 (12 abril 2026, noche): el fix anterior usaba
+    # `stores_collection.where("country", "==", country)` como primera
+    # estrategia. El problema: los stores legacy (creados antes de que el
+    # schema incluyera `country` en el doc) no tienen ese campo, entonces la
+    # query los ignora silenciosamente. No hay excepción, simplemente 0
+    # resultados, y las fantasma sobreviven.
+    #
+    # Nueva estrategia: SIEMPRE hacer scan completo de `stores` y decidir en
+    # cliente cuáles borrar, con criterio inclusivo:
+    #   1. docs con `country == <país activo>` → match explícito
+    #   2. docs cuyo ID termina en `_<país activo>` (convención slug_cl, _ar,
+    #      etc.) → match por naming, aunque no tengan `country` en el doc
+    #
+    # También evitamos borrar los que estamos por reescribir (están en
+    # `_new_store_ids` que construimos antes del scan).
     #
     # Nota de seguridad: el delete + set van en el MISMO batch, por lo que
     # todo es atómico. Si el batch falla, no borramos nada.
+    # Slug generator unificado con admin web (fix 12 abril 2026 noche).
+    # IMPORTANTE: debe ser ASCII-only para coincidir con el algoritmo del
+    # admin web (`makeStoreId` en admin.html), que usa regex /[a-z0-9]/.
+    # Antes acá usábamos `c.isalnum()` (Unicode-aware) y "ANTONIA FLUXÁ" se
+    # convertía en "antonia_fluxá" mientras el admin web generaba
+    # "antonia_flux" — los dos sistemas nunca matcheaban los mismos docs,
+    # y cada upload desde el robot creaba docs paralelos sin sobrescribir
+    # los viejos. Resultado: tiendas fantasma acumuladas para siempre.
+    import unicodedata as _unicodedata
+    def _make_store_slug(name, country_code):
+        # 1. Lowercase
+        s = str(name or "").lower()
+        # 2. Normalizar NFKD y quitar marcas combinantes (á→a, ñ→n, etc.)
+        decomposed = _unicodedata.normalize("NFKD", s)
+        ascii_str = "".join(c for c in decomposed if not _unicodedata.combining(c))
+        # 3. Reemplazar cualquier char no-[a-z0-9] por _
+        chars = [c if ("a" <= c <= "z" or "0" <= c <= "9") else "_" for c in ascii_str]
+        slug_raw = "".join(chars).strip("_")
+        # 4. Colapsar múltiples _ consecutivos en uno solo
+        while "__" in slug_raw:
+            slug_raw = slug_raw.replace("__", "_")
+        return f"{slug_raw}_{country_code.lower()}"
+
+    _new_store_ids = set()
+    _new_brand_name_lower_to_id = {}
+    for b in brands:
+        store_id = _make_store_slug(b["name"], country)
+        _new_store_ids.add(store_id)
+        _new_brand_name_lower_to_id[b["name"].strip().lower()] = store_id
+
+    # Scan completo para detectar docs a borrar. Tres criterios de match
+    # (union):
+    #   A. `country == país activo`  → match explícito
+    #   B. doc_id termina en `_<país>` y no tiene country → legacy por sufijo
+    #   C. el `name` del doc coincide (case-insensitive) con una marca que
+    #      estamos reescribiendo, pero el doc_id NO matchea el slug nuevo
+    #      → legacy con slug malformado (ej: "antonia_flux_cl" cuando el
+    #      nuevo es "antonia_fluxa_cl"). Este criterio es el que detecta
+    #      docs paralelos creados por versiones viejas del slug generator.
     stores_to_delete = []
+    country_lower = country.lower()
+    country_suffix = f"_{country_lower}"
+    scanned = 0
     try:
-        existing_query = stores_collection.where("country", "==", country).stream()
-        for existing_doc in existing_query:
-            stores_to_delete.append(existing_doc.id)
-    except Exception as _list_err:
-        # Si el where falla (ej: sin índice compuesto, o country no estaba
-        # indexado), caemos a un listado sin filtro y filtramos en cliente.
-        # Esto es más lento pero robusto.
-        print(f"⚠️ country filter falló, usando scan full: {_list_err}")
         for existing_doc in stores_collection.stream():
+            scanned += 1
+            doc_id = existing_doc.id
+            if doc_id in _new_store_ids:
+                continue  # exact id match — va a ser reescrito, skip
+
             data = existing_doc.to_dict() or {}
             doc_country = data.get("country", "")
-            # Si el doc no tiene country explícito, inferir del id (termina en _xx)
-            if not doc_country and existing_doc.id.endswith(f"_{country.lower()}"):
-                doc_country = country
+            doc_name = str(data.get("name", "")).strip()
+            doc_name_lower = doc_name.lower()
+
+            # Criterio C: match por nombre (resuelve slugs inconsistentes)
+            # Si el doc tiene el mismo nombre que una marca que vamos a
+            # reescribir, lo marcamos para delete — el nuevo slug va a
+            # reemplazarlo (con id distinto) pero sin dejar el viejo huérfano.
+            if doc_name_lower in _new_brand_name_lower_to_id:
+                stores_to_delete.append(doc_id)
+                continue
+
+            # Criterio A: country explícito
             if doc_country == country:
-                stores_to_delete.append(existing_doc.id)
+                stores_to_delete.append(doc_id)
+                continue
+
+            # Criterio B: legacy con sufijo de país y sin country field
+            if not doc_country and doc_id.endswith(country_suffix):
+                stores_to_delete.append(doc_id)
+                continue
+
+            # Docs de otro país o que no encajan ningún criterio → NO tocar
+    except Exception as _list_err:
+        # Si el scan completo falla (inusual), abortamos el delete para no
+        # borrar algo que no deberíamos. El upload sigue pero solo sobrescribe.
+        print(f"⚠️ [upload_to_admin] stores scan falló, abortando delete-sweep: {_list_err}")
+        stores_to_delete = []
 
     for old_id in stores_to_delete:
         batch.delete(stores_collection.document(old_id))
 
-    print(f"🗑️  [upload_to_admin] Borrando {len(stores_to_delete)} tiendas existentes del país {country}")
+    print(
+        f"🗑️  [upload_to_admin] país={country} scanned={scanned} "
+        f"reescribir={len(_new_store_ids)} borrar={len(stores_to_delete)} "
+        f"ids_a_borrar={stores_to_delete[:10]}"
+    )
 
     written_stores = []
     total_products = 0
     for brand_idx, b in enumerate(brands, start=1):
         brand_name = b["name"]
-        # store_id estable: slug de marca + país (e.g. "manto_silvestre_cl")
-        slug = "".join(c if c.isalnum() else "_" for c in brand_name.lower()).strip("_")
-        store_id = f"{slug}_{country.lower()}"
+        # store_id estable generado con el mismo helper que usamos arriba
+        # (ASCII-only, coincidente con admin web).
+        store_id = _make_store_slug(brand_name, country)
 
         products_payload = []
         for pos_in_brand, p in enumerate(b["products"], start=1):
