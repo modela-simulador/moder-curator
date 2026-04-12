@@ -1891,9 +1891,26 @@ def _sanitize_cell(value):
     return value
 
 def build_curated_brands_for_ordering(session, country, brand_selection_order=None):
-    """Cruza session['accepted'] con el crawl cache para reconstruir las marcas
-    aprobadas con toda la información necesaria para la UI del Paso 4 "Ordenar
-    y Descargar" y para el upload directo al admin.
+    """Cruza session['accepted'] + session['previous_rows'] con el crawl cache
+    para reconstruir las marcas aprobadas con toda la información necesaria
+    para la UI del Paso 4 "Ordenar y Descargar" y para el upload directo al admin.
+
+    Fuentes de datos (merge policy):
+
+    1. **previous_rows**: filas de la planilla .xlsx que el admin subió al inicio
+       de la sesión. Ya vienen con Orden/Posición/Etiquetas asignadas. Solo
+       incluimos las filas con `Aprobado == "Si"` (las rechazadas se omiten
+       del visualizador pero se preservan en `previous_rows` por si el admin
+       descarga el Excel directo sin Paso 4).
+
+    2. **accepted**: productos que el admin aprobó/marcó como trend en esta
+       sesión de curación. Cruzan con `_get_cached_products(country)` para
+       obtener imagen/categoría/tags del crawl.
+
+    **Política de duplicados**: si un URL aparece en ambas fuentes (el admin
+    re-curó un producto que ya estaba en la planilla), **gana la versión nueva**
+    (accepted). La decisión se confirmó con el usuario en la auditoría
+    del 12 abril 2026: el re-curado implica intención de actualizar.
 
     Returns:
         list of dicts, each: {
@@ -1904,8 +1921,9 @@ def build_curated_brands_for_ordering(session, country, brand_selection_order=No
                     "title": str,
                     "image_url": str,
                     "category": str,
-                    "tags": list[str],         # existing tags (preserved)
+                    "tags": list[str],         # hasta 4 etiquetas
                     "is_trend": bool,
+                    "source": "accepted" | "previous",   # para debugging
                 },
                 ...
             ]
@@ -1916,59 +1934,148 @@ def build_curated_brands_for_ordering(session, country, brand_selection_order=No
         country: código ISO del país activo
         brand_selection_order: lista ordenada de nombres de marca (opcional).
             Si se provee, las marcas en el resultado respetan ese orden.
-            Si no, se usa el orden de primera aparición en all_products
-            (que coincide con el orden de `active_brands` del usuario).
-
-    Las URLs aprobadas se toman de session["accepted"]. El enriquecimiento
-    (imagen, categoría, tags originales) viene del cache de crawl porque
-    session["accepted"] solo guarda campos slim para ahorrar memoria.
+            Si no, se usa el orden de primera aparición combinando ambas
+            fuentes (previous_rows primero porque son los "anclas" de la
+            planilla cargada, accepted después).
     """
     all_products = _get_cached_products(country) or []
 
-    # Mapa url_normalizada → producto crawleado (para O(1) lookup)
+    # Mapa url_normalizada → producto crawleado (para O(1) lookup en accepted)
     by_url = {}
     for p in all_products:
         by_url[_norm_url(p.get("product_url", ""))] = p
 
-    # Extraer los accepted urls + trend set (mismo patrón que generate_plantilla)
+    # ── PASO 1: accepted set (se procesa primero para tener prioridad) ──
     accepted_info = {}  # url → {"is_trend": bool}
     for p in session.get("accepted", []):
         url = _norm_url(p.get("product_url", ""))
         accepted_info[url] = {"is_trend": bool(p.get("trend"))}
 
-    # Agrupar por marca preservando orden de primera aparición en all_products
-    brand_groups = {}
+    # Build un dict unificado: url_norm → {brand, product_dict}
+    # Si la misma url aparece en ambas fuentes, la versión 'accepted' gana.
+    merged_by_url = {}
+    # Preservamos el orden de aparición de las marcas para el fallback
+    # brand_first_seen cuando no hay brand_selection_order.
     brand_first_seen_order = []
+    seen_brands = set()
+
+    # ── PASO 2: PREVIOUS_ROWS primero (se van a sobrescribir por accepted
+    #           si hay conflicto). Sólo incluimos filas con Aprobado == "Si".
+    for prev_row in session.get("previous_rows", []) or []:
+        link = prev_row.get("Link", "")
+        if not isinstance(link, str) or not link.startswith("http"):
+            continue
+        aprobado = str(prev_row.get("Aprobado", "No")).strip().lower()
+        # Decisión del usuario (auditoría 12 abril 2026): omitir rechazados
+        # del visualizador del Paso 4. Siguen existiendo en previous_rows
+        # y se preservan al descargar el Excel directo.
+        if aprobado not in ("si", "sí", "yes", "true"):
+            continue
+
+        url_norm = _norm_url(link)
+        brand = str(prev_row.get("Marca", "Desconocida")).strip() or "Desconocida"
+
+        # Extraer etiquetas de las columnas del Excel (pueden estar vacías)
+        prev_tags = [
+            str(prev_row.get("Etiqueta 1", "") or "").strip(),
+            str(prev_row.get("Etiqueta 2", "") or "").strip(),
+            str(prev_row.get("Etiqueta 3", "") or "").strip(),
+            str(prev_row.get("Etiqueta 4", "") or "").strip(),
+        ]
+        prev_tags = [t for t in prev_tags if t]  # drop vacíos
+
+        is_trend = str(prev_row.get("Tendencia", "No")).strip().lower() in ("si", "sí", "yes", "true")
+
+        # Intentar obtener imagen del crawl cache si existe.
+        # Si no, fallback a la columna Imagen del Excel (puede estar vacía).
+        cached = by_url.get(url_norm)
+        image_url = ""
+        title = ""
+        category = str(prev_row.get("Categoría", "") or "").strip()
+        if cached:
+            image_url = cached.get("image_url", "") or ""
+            title = cached.get("name", "") or cached.get("title", "") or ""
+        # Fallback a columna Imagen/Titulo del Excel (si el admin la llenó)
+        if not image_url:
+            excel_img = prev_row.get("Imagen", "")
+            if isinstance(excel_img, str) and excel_img.startswith("http"):
+                image_url = excel_img
+        if not title:
+            excel_title = prev_row.get("Titulo", "") or prev_row.get("Título", "")
+            if isinstance(excel_title, str):
+                title = str(excel_title).strip()
+        # Último recurso: derivar un título legible del URL (el slug de la
+        # última parte del path). Mejor que un card sin texto en el Paso 4.
+        if not title:
+            try:
+                from urllib.parse import urlparse
+                path = urlparse(link).path
+                slug = path.rstrip("/").split("/")[-1] or "(sin título)"
+                # Capitalizar y reemplazar guiones/underscores por espacios
+                title = slug.replace("-", " ").replace("_", " ").strip().title()
+                if not title:
+                    title = "(sin título)"
+            except Exception:
+                title = "(sin título)"
+
+        merged_by_url[url_norm] = {
+            "brand": brand,
+            "url": link,
+            "title": title,
+            "image_url": image_url,
+            "category": category,
+            "tags": prev_tags[:4],
+            "is_trend": is_trend,
+            "source": "previous",
+        }
+
+        if brand not in seen_brands:
+            brand_first_seen_order.append(brand)
+            seen_brands.add(brand)
+
+    # ── PASO 3: ACCEPTED — sobrescribe si hay conflicto por URL ──
     for p in all_products:
-        url = _norm_url(p.get("product_url", ""))
-        if url not in accepted_info:
-            continue  # Solo incluimos productos aprobados
+        url_norm = _norm_url(p.get("product_url", ""))
+        if url_norm not in accepted_info:
+            continue  # Solo productos aprobados esta sesión
 
         brand = p.get("brand", "Desconocida")
-        if brand not in brand_groups:
-            brand_groups[brand] = []
-            brand_first_seen_order.append(brand)
-
         tags = p.get("tags", [])
         if not isinstance(tags, list):
             tags = []
 
-        brand_groups[brand].append({
+        merged_by_url[url_norm] = {
+            "brand": brand,
             "url": p.get("product_url", ""),
             "title": p.get("name", "") or p.get("title", ""),
             "image_url": p.get("image_url", ""),
             "category": p.get("category", ""),
             "tags": [_sanitize_cell(t) for t in tags[:4]],
-            "is_trend": accepted_info[url]["is_trend"],
-        })
+            "is_trend": accepted_info[url_norm]["is_trend"],
+            "source": "accepted",
+        }
 
-    # Determinar orden final de marcas
+        if brand not in seen_brands:
+            brand_first_seen_order.append(brand)
+            seen_brands.add(brand)
+
+    # ── PASO 4: Agrupar por marca ──
+    brand_groups = {}
+    for url_norm, item in merged_by_url.items():
+        brand = item["brand"]
+        if brand not in brand_groups:
+            brand_groups[brand] = []
+        # Remove the `brand` key; downstream expects the product dict shape.
+        prod_copy = {k: v for k, v in item.items() if k != "brand"}
+        brand_groups[brand].append(prod_copy)
+
+    # ── PASO 5: Determinar orden final de marcas ──
     if brand_selection_order:
         ordered_names = [b for b in brand_selection_order if b in brand_groups]
-        extras = [b for b in brand_first_seen_order if b not in brand_selection_order]
+        extras = [b for b in brand_first_seen_order if b not in brand_selection_order and b in brand_groups]
         ordered_names += extras
     else:
-        ordered_names = brand_first_seen_order
+        ordered_names = [b for b in brand_first_seen_order if b in brand_groups]
 
     return [{"name": name, "products": brand_groups[name]} for name in ordered_names]
 
@@ -2032,8 +2139,21 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
 
     row = 2
 
-    # ── PART 1: Write previous rows (preserve all their data as-is)
+    # Detectar modo Paso 4: si hay brand_order explícito + product_order_override,
+    # el usuario pasó por el visualizador del Paso 4 y reordenó las marcas y
+    # productos (incluyendo las filas de la planilla previa). En ese modo,
+    # necesitamos "promover" las previous_rows aprobadas al flujo principal de
+    # reordenamiento, en lugar de escribirlas "as-is" al inicio.
+    step4_mode = bool(brand_order or product_order_override)
+
+    # ── PART 1: Write previous rows ──
     prev_urls = set()
+    # En modo Paso 4: guardamos las filas previas aprobadas para inyectarlas
+    # en brand_groups más abajo. Las rechazadas sí van al Excel as-is al final
+    # para preservar el historial (por si el admin quiere reconsiderarlas).
+    promoted_prev_products = []  # list of (brand, synthetic_product_dict)
+    rejected_prev_rows = []      # se escriben al final, sin orden del Paso 4
+
     if previous_rows:
         for prev_row in previous_rows:
             link = str(prev_row.get("Link", ""))
@@ -2041,6 +2161,35 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
                 continue
             prev_urls.add(_norm_url(link))
 
+            if step4_mode:
+                # Clasificar: aprobado va al reorder, rechazado queda aparte.
+                aprobado = str(prev_row.get("Aprobado", "No")).strip().lower()
+                if aprobado in ("si", "sí", "yes", "true"):
+                    # Construir producto sintético compatible con all_products
+                    # shape. Lo agregamos al brand_groups después.
+                    brand = str(prev_row.get("Marca", "Desconocida")).strip() or "Desconocida"
+                    tags_list = [
+                        str(prev_row.get("Etiqueta 1", "") or "").strip(),
+                        str(prev_row.get("Etiqueta 2", "") or "").strip(),
+                        str(prev_row.get("Etiqueta 3", "") or "").strip(),
+                        str(prev_row.get("Etiqueta 4", "") or "").strip(),
+                    ]
+                    synthetic = {
+                        "product_url": link,
+                        "brand": brand,
+                        "name": prev_row.get("Titulo", "") or prev_row.get("Título", "") or "",
+                        "category": str(prev_row.get("Categoría", "") or "").strip(),
+                        "tags": [t for t in tags_list if t],
+                        "image_url": prev_row.get("Imagen", "") if isinstance(prev_row.get("Imagen", ""), str) else "",
+                        "_from_previous": True,  # marker para distinguir en el loop
+                        "_prev_is_trend": str(prev_row.get("Tendencia", "No")).strip().lower() in ("si", "sí", "yes", "true"),
+                    }
+                    promoted_prev_products.append((brand, synthetic))
+                else:
+                    rejected_prev_rows.append(prev_row)
+                continue  # no escribir as-is en modo Paso 4
+
+            # Modo legacy: escribir as-is tal como estaba antes.
             col_map = {
                 1: link,
                 2: prev_row.get("Marca", ""),
@@ -2066,17 +2215,28 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
 
             row += 1
 
-    # ── PART 2: Write ALL new products (not in previous) with Aprobado Si/No
-    #
-    # Paso 1: agrupar productos por marca preservando el orden de primera
-    # aparición (que corresponde al orden en que fueron crawled, que a su vez
-    # respeta el orden de `active_brands` en que el usuario las seleccionó).
+    # ── PART 2: Write ALL new products with Aprobado Si/No ──
+    # En modo Paso 4 incluimos también los "promoted_prev_products" que venían
+    # de previous_rows aprobadas, para que entren al reordenamiento con los overrides.
     brand_groups = {}
-    brand_first_seen_order = []  # preserva orden de primera aparición
+    brand_first_seen_order = []
+
+    # Primero los sintéticos de previous_rows aprobadas (modo Paso 4).
+    # Así respetan el orden de aparición para el fallback si no hay brand_order.
+    for brand, synthetic in promoted_prev_products:
+        if brand not in brand_groups:
+            brand_groups[brand] = []
+            brand_first_seen_order.append(brand)
+        brand_groups[brand].append(synthetic)
+        # Marcar la URL como ya escrita en "previous" para evitar doble-write
+        # desde all_products en el próximo loop.
+        # (prev_urls ya tiene estas URLs del loop anterior.)
+
+    # Ahora los productos del crawl que NO están en previous.
     for p in all_products:
         url = _norm_url(p.get("product_url", ""))
         if url in prev_urls:
-            continue  # Already in previous spreadsheet
+            continue  # Already handled (as-is or promoted al step4 mode)
         brand = p.get("brand", "Desconocida")
         if brand not in brand_groups:
             brand_groups[brand] = []
@@ -2116,8 +2276,19 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
 
         for position_in_brand, p in enumerate(products, start=1):
             url = _norm_url(p.get("product_url", ""))
-            is_approved = url in accepted_urls
-            is_trend = url in trend_urls
+
+            # Detectar si el producto viene de previous_rows (promoted al
+            # modo Paso 4). En ese caso, is_approved/is_trend vienen del
+            # dict sintético — no de los sets accepted/trend_urls que solo
+            # reflejan la sesión actual de curación.
+            is_from_previous = p.get("_from_previous", False)
+            if is_from_previous:
+                is_approved = True  # promoted solo se activa si "Aprobado": "Si"
+                is_trend = bool(p.get("_prev_is_trend", False))
+            else:
+                is_approved = url in accepted_urls
+                is_trend = url in trend_urls
+
             tags = p.get("tags", [])
             if not isinstance(tags, list):
                 tags = []
@@ -2149,6 +2320,37 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
 
             row += 1
             new_count += 1
+
+    # ── PART 3: Write rejected previous rows at the end (modo Paso 4 only) ──
+    # Los rechazados de la planilla previa no entran al reorder del Paso 4,
+    # pero los escribimos al final del Excel como archivo histórico para
+    # que el admin pueda verlos si quiere reconsiderarlos más adelante.
+    if step4_mode and rejected_prev_rows:
+        for prev_row in rejected_prev_rows:
+            link = str(prev_row.get("Link", ""))
+            if not link.startswith("http"):
+                continue
+            col_map = {
+                1: link,
+                2: prev_row.get("Marca", ""),
+                3: prev_row.get("Aprobado", "No"),
+                4: prev_row.get("Tendencia", "No"),
+                5: prev_row.get("Orden", ""),
+                6: prev_row.get("Posición", ""),
+                7: prev_row.get("Top 20", "No"),
+                8: prev_row.get("Categoría", ""),
+                9: prev_row.get("Etiqueta 1", ""),
+                10: prev_row.get("Etiqueta 2", ""),
+                11: prev_row.get("Etiqueta 3", ""),
+                12: prev_row.get("Etiqueta 4", ""),
+            }
+            for c, val in col_map.items():
+                cell = ws.cell(row=row, column=c, value=val if val else "")
+                cell.border = thin_border
+                cell.fill = existing_fill
+            ws.cell(row=row, column=1).hyperlink = link
+            ws.cell(row=row, column=1).font = Font(color="666666", underline="single")
+            row += 1
 
     # Column widths — agregamos columna 12 (Etiqueta 4)
     widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15, 15]
