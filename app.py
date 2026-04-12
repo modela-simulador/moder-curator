@@ -3633,6 +3633,71 @@ def debug_version():
     })
 
 
+@app.route("/debug/list_stores", methods=["GET"])
+def debug_list_stores():
+    """Lista TODAS las stores en Firestore con metadata mínima para diagnóstico.
+    Público (sin auth). Solo metadata pública que el iOS también lee.
+
+    Query params:
+      country (opcional) — filtra por doc_country == country (case sensitive)
+
+    Response:
+      {
+        "total": N,
+        "stores": [
+          {"id":"...", "name":"...", "country":"...", "products":N,
+           "has_country_field": true/false,
+           "id_ends_with_cl": true/false,
+           ...}
+        ]
+      }
+    """
+    try:
+        from firestore_storage import _get_db
+    except ImportError:
+        return jsonify({"error": "firestore_storage no disponible"}), 500
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore no configurado"}), 500
+
+    filter_country = request.args.get("country") or None
+    if filter_country:
+        filter_country = filter_country.upper()
+
+    stores_collection = db.collection("stores")
+    stores = []
+    try:
+        for doc in stores_collection.stream():
+            data = doc.to_dict() or {}
+            doc_country = data.get("country", "")
+            if filter_country and doc_country != filter_country:
+                continue
+            stores.append({
+                "id": doc.id,
+                "name": str(data.get("name", "")),
+                "country": doc_country,
+                "has_country_field": "country" in data,
+                "products_count": len(data.get("products") or []),
+                "is_active": data.get("isActive"),
+                "order": data.get("order"),
+                "id_ends_with__cl": doc.id.endswith("_cl"),
+                "id_ends_with__ar": doc.id.endswith("_ar"),
+                "id_ends_with__co": doc.id.endswith("_co"),
+                "id_ends_with__mx": doc.id.endswith("_mx"),
+                "id_ends_with__es": doc.id.endswith("_es"),
+            })
+    except Exception as _err:
+        return jsonify({"error": f"scan falló: {_err}"}), 500
+
+    # Ordenar por id para que el output sea estable
+    stores.sort(key=lambda s: s["id"])
+    return jsonify({
+        "total": len(stores),
+        "filter_country": filter_country,
+        "stores": stores,
+    })
+
+
 @app.route("/debug/dry_run_upload", methods=["GET"])
 @login_required
 def debug_dry_run_upload():
