@@ -3594,6 +3594,174 @@ def upload_to_admin():
     })
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Diagnostic endpoints — 12 abril 2026 noche
+#
+# Añadidos para investigar por qué `upload_to_admin` no estaba limpiando las
+# tiendas fantasma en producción. Sin acceso a Render CLI ni a logs en vivo,
+# esto permite preguntarle al robot desplegado qué está viendo en Firestore.
+#
+# `/debug/version` — devuelve el commit hash para confirmar que Render ya
+# deployeó la versión esperada (Render setea RENDER_GIT_COMMIT).
+#
+# `/debug/dry_run_upload` — corre el MISMO scan que `upload_to_admin` pero
+# sin commitear nada. Responde JSON con qué borraría y por qué. Requiere
+# autenticación (admin), igual que el endpoint real.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.route("/debug/version", methods=["GET"])
+def debug_version():
+    """Devuelve commit hash, branch y timestamp del deploy actual.
+    Público (sin auth) — solo metadata, nada sensible.
+    """
+    import os as _os
+    import datetime as _dt
+    commit = (
+        _os.environ.get("RENDER_GIT_COMMIT")
+        or _os.environ.get("GIT_COMMIT")
+        or "unknown"
+    )
+    branch = _os.environ.get("RENDER_GIT_BRANCH", "unknown")
+    service_id = _os.environ.get("RENDER_SERVICE_ID", "unknown")
+    return jsonify({
+        "commit": commit,
+        "commit_short": commit[:8] if commit != "unknown" else "unknown",
+        "branch": branch,
+        "service_id": service_id,
+        "server_time": _dt.datetime.utcnow().isoformat() + "Z",
+        "expected_fix_commit": "527bed4",
+    })
+
+
+@app.route("/debug/dry_run_upload", methods=["GET"])
+@login_required
+def debug_dry_run_upload():
+    """Simula el scan+delete de `upload_to_admin` SIN commitear.
+    Devuelve JSON explicando qué borraría y por qué.
+
+    Query params:
+      country (opcional) — si se omite, usa el país activo de la sesión.
+
+    Uso: `curl -b cookies.txt https://moder-curator.onrender.com/debug/dry_run_upload?country=CL`
+    """
+    session = load_session()
+    country = request.args.get("country") or load_active_country()
+    country = (country or "").upper()
+
+    # Marcas curadas de la sesión actual
+    brand_order = session.get("brand_order_override") or [
+        b.get("name", "") for b in (load_active_brands(country) or []) if b.get("name")
+    ]
+    brands = build_curated_brands_for_ordering(
+        session, country, brand_selection_order=brand_order
+    )
+
+    # Firestore handle
+    try:
+        from firestore_storage import _get_db
+    except ImportError:
+        return jsonify({"error": "firestore_storage no disponible"}), 500
+    db = _get_db()
+    if db is None:
+        return jsonify({"error": "Firestore no configurado"}), 500
+
+    stores_collection = db.collection("stores")
+
+    # Mismo slug generator que upload_to_admin — DEBE ser idéntico
+    import unicodedata as _unicodedata
+    def _make_store_slug(name, country_code):
+        s = str(name or "").lower()
+        decomposed = _unicodedata.normalize("NFKD", s)
+        ascii_str = "".join(c for c in decomposed if not _unicodedata.combining(c))
+        chars = [c if ("a" <= c <= "z" or "0" <= c <= "9") else "_" for c in ascii_str]
+        slug_raw = "".join(chars).strip("_")
+        while "__" in slug_raw:
+            slug_raw = slug_raw.replace("__", "_")
+        return f"{slug_raw}_{country_code.lower()}"
+
+    _new_store_ids = set()
+    _new_brand_name_lower_to_id = {}
+    new_slugs_debug = []
+    for b in brands:
+        slug = _make_store_slug(b["name"], country)
+        _new_store_ids.add(slug)
+        _new_brand_name_lower_to_id[b["name"].strip().lower()] = slug
+        new_slugs_debug.append({"brand": b["name"], "slug": slug})
+
+    country_lower = country.lower()
+    country_suffix = f"_{country_lower}"
+
+    to_delete = []
+    to_rewrite = []
+    untouched = []
+    all_scanned = []
+
+    try:
+        for existing_doc in stores_collection.stream():
+            doc_id = existing_doc.id
+            data = existing_doc.to_dict() or {}
+            doc_country = data.get("country", "")
+            doc_name = str(data.get("name", "")).strip()
+            doc_name_lower = doc_name.lower()
+            products_count = len(data.get("products") or [])
+
+            entry = {
+                "id": doc_id,
+                "name": doc_name,
+                "country": doc_country,
+                "products": products_count,
+            }
+            all_scanned.append(entry)
+
+            # Match exact id — será sobrescrito (set con merge=false)
+            if doc_id in _new_store_ids:
+                to_rewrite.append({**entry, "reason": "exact_id_match"})
+                continue
+
+            # Criterio C: name match
+            if doc_name_lower in _new_brand_name_lower_to_id:
+                new_id_for_name = _new_brand_name_lower_to_id[doc_name_lower]
+                to_delete.append({
+                    **entry,
+                    "reason": "criterion_C_name_match",
+                    "new_slug_would_be": new_id_for_name,
+                })
+                continue
+
+            # Criterio A: country explícito
+            if doc_country == country:
+                to_delete.append({**entry, "reason": "criterion_A_country_field"})
+                continue
+
+            # Criterio B: sufijo + sin country
+            if not doc_country and doc_id.endswith(country_suffix):
+                to_delete.append({**entry, "reason": "criterion_B_suffix_no_country"})
+                continue
+
+            untouched.append(entry)
+    except Exception as _err:
+        return jsonify({
+            "error": f"scan falló: {_err}",
+            "scanned_before_error": len(all_scanned),
+        }), 500
+
+    return jsonify({
+        "country": country,
+        "summary": {
+            "scanned_total": len(all_scanned),
+            "to_delete": len(to_delete),
+            "to_rewrite": len(to_rewrite),
+            "untouched": len(untouched),
+        },
+        "new_slugs_from_session_brands": new_slugs_debug,
+        "new_store_ids_set": sorted(_new_store_ids),
+        "to_delete": to_delete,
+        "to_rewrite": to_rewrite,
+        "untouched": untouched,
+        "all_scanned_ids": sorted([e["id"] for e in all_scanned]),
+    })
+
+
 @app.route("/cancel-curation", methods=["POST"])
 @login_required
 def cancel_curation():
