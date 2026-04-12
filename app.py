@@ -3171,6 +3171,42 @@ def upload_to_admin():
     now_ts = SERVER_TIMESTAMP
     stores_collection = db.collection("stores")
 
+    # ── Merge policy: REEMPLAZO COMPLETO DE COLECCIÓN POR PAÍS ──
+    # Fix (12 abril 2026) — el comportamiento anterior hacía batch.set por
+    # store_id, lo cual sobrescribía los stores del upload actual pero dejaba
+    # intactas las tiendas viejas de uploads anteriores. Eso generaba un
+    # merge-implícito al nivel de colección.
+    #
+    # Ahora: borramos TODAS las tiendas del país activo antes de escribir las
+    # nuevas. Resultado: al final del batch commit, Firestore tiene SOLO las
+    # tiendas del curado actual, nada más.
+    #
+    # Nota de seguridad: el delete + set van en el MISMO batch, por lo que
+    # todo es atómico. Si el batch falla, no borramos nada.
+    stores_to_delete = []
+    try:
+        existing_query = stores_collection.where("country", "==", country).stream()
+        for existing_doc in existing_query:
+            stores_to_delete.append(existing_doc.id)
+    except Exception as _list_err:
+        # Si el where falla (ej: sin índice compuesto, o country no estaba
+        # indexado), caemos a un listado sin filtro y filtramos en cliente.
+        # Esto es más lento pero robusto.
+        print(f"⚠️ country filter falló, usando scan full: {_list_err}")
+        for existing_doc in stores_collection.stream():
+            data = existing_doc.to_dict() or {}
+            doc_country = data.get("country", "")
+            # Si el doc no tiene country explícito, inferir del id (termina en _xx)
+            if not doc_country and existing_doc.id.endswith(f"_{country.lower()}"):
+                doc_country = country
+            if doc_country == country:
+                stores_to_delete.append(existing_doc.id)
+
+    for old_id in stores_to_delete:
+        batch.delete(stores_collection.document(old_id))
+
+    print(f"🗑️  [upload_to_admin] Borrando {len(stores_to_delete)} tiendas existentes del país {country}")
+
     written_stores = []
     total_products = 0
     for brand_idx, b in enumerate(brands, start=1):
