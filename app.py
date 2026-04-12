@@ -2001,7 +2001,9 @@ def build_curated_brands_for_ordering(session, country, brand_selection_order=No
             if isinstance(excel_img, str) and excel_img.startswith("http"):
                 image_url = excel_img
         if not title:
-            excel_title = prev_row.get("Titulo", "") or prev_row.get("Título", "")
+            # Preferir "Título" (con tilde, formato nuevo) sobre "Titulo"
+            # (sin tilde, formato viejo). Ambas variantes son válidas.
+            excel_title = prev_row.get("Título", "") or prev_row.get("Titulo", "")
             if isinstance(excel_title, str):
                 title = str(excel_title).strip()
         # Último recurso: derivar un título legible del URL (el slug de la
@@ -2114,8 +2116,16 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
     ws = wb.active
     ws.title = "Productos"
 
+    # Columnas "Imagen" (col 13) y "Título" (col 14) — fix 12 abril 2026:
+    # antes el Excel no incluía ni la URL de imagen ni el título del producto.
+    # Al re-subir una planilla en una sesión posterior, el visualizador del
+    # Paso 4 quedaba sin imagen y con un slug del URL como título. Ahora el
+    # robot escribe ambos valores del crawl en esas columnas, y el parser
+    # los reusa en futuras sesiones. Ambas son editables manualmente por el
+    # admin si quiere corregir.
     headers = ["Link", "Marca", "Aprobado", "Tendencia", "Orden", "Posición",
-               "Top 20", "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3", "Etiqueta 4"]
+               "Top 20", "Categoría", "Etiqueta 1", "Etiqueta 2", "Etiqueta 3",
+               "Etiqueta 4", "Imagen", "Título"]
 
     header_font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
     header_fill = PatternFill(start_color="1C1C1E", end_color="1C1C1E", fill_type="solid")
@@ -2190,6 +2200,23 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
                 continue  # no escribir as-is en modo Paso 4
 
             # Modo legacy: escribir as-is tal como estaba antes.
+            # Imagen y Título: preferir lo que venía en la planilla; si no,
+            # mirar el crawl cache por si el producto sigue crawleable.
+            legacy_img = prev_row.get("Imagen", "")
+            legacy_title = prev_row.get("Título", "") or prev_row.get("Titulo", "")
+            if not legacy_img or not legacy_title:
+                # Fallback: buscar en el crawl cache por URL normalizada
+                cached_p = next(
+                    (p for p in all_products
+                     if _norm_url(p.get("product_url", "")) == _norm_url(link)),
+                    None
+                )
+                if cached_p:
+                    if not legacy_img:
+                        legacy_img = cached_p.get("image_url", "") or ""
+                    if not legacy_title:
+                        legacy_title = cached_p.get("name", "") or cached_p.get("title", "") or ""
+
             col_map = {
                 1: link,
                 2: prev_row.get("Marca", ""),
@@ -2203,6 +2230,8 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
                 10: prev_row.get("Etiqueta 2", ""),
                 11: prev_row.get("Etiqueta 3", ""),
                 12: prev_row.get("Etiqueta 4", ""),
+                13: legacy_img,
+                14: legacy_title,
             }
             for c, val in col_map.items():
                 cell = ws.cell(row=row, column=c, value=val if val else "")
@@ -2293,6 +2322,12 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
             if not isinstance(tags, list):
                 tags = []
 
+            # Imagen y Título: del crawl (p["image_url"], p["name"]). Para
+            # productos "promoted" desde previous_rows, el dict sintético ya
+            # los trae pobladas del parser de la planilla original.
+            image_url = p.get("image_url", "") or ""
+            product_title = p.get("name", "") or p.get("title", "") or ""
+
             ws.cell(row=row, column=1, value=_sanitize_cell(p.get("product_url", ""))).border = thin_border
             ws.cell(row=row, column=2, value=_sanitize_cell(brand_name)).border = thin_border
             ws.cell(row=row, column=3, value="Si" if is_approved else "No").border = thin_border
@@ -2308,10 +2343,13 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
             ws.cell(row=row, column=11, value=_sanitize_cell(tags[2]) if len(tags) > 2 else "").border = thin_border
             # Etiqueta 4 — opcional, se llena en el Paso 4 o manualmente.
             ws.cell(row=row, column=12, value=_sanitize_cell(tags[3]) if len(tags) > 3 else "").border = thin_border
+            # Imagen y Título — del crawl o del Excel previo (fix 12 abril 2026)
+            ws.cell(row=row, column=13, value=_sanitize_cell(image_url)).border = thin_border
+            ws.cell(row=row, column=14, value=_sanitize_cell(product_title)).border = thin_border
 
             # Color: green for approved, orange for rejected
             fill = approved_fill if is_approved else rejected_fill
-            for c in range(1, 13):
+            for c in range(1, 15):
                 ws.cell(row=row, column=c).fill = fill
 
             ws.cell(row=row, column=1).hyperlink = p.get("product_url", "")
@@ -2343,6 +2381,8 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
                 10: prev_row.get("Etiqueta 2", ""),
                 11: prev_row.get("Etiqueta 3", ""),
                 12: prev_row.get("Etiqueta 4", ""),
+                13: prev_row.get("Imagen", ""),
+                14: prev_row.get("Título", "") or prev_row.get("Titulo", ""),
             }
             for c, val in col_map.items():
                 cell = ws.cell(row=row, column=c, value=val if val else "")
@@ -2352,12 +2392,14 @@ def generate_plantilla(all_products, accepted_urls, trend_urls, output_path,
             ws.cell(row=row, column=1).font = Font(color="666666", underline="single")
             row += 1
 
-    # Column widths — agregamos columna 12 (Etiqueta 4)
-    widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15, 15]
+    # Column widths — 14 columnas ahora (agregamos "Imagen" y "Título" al
+    # final). El width 40 le da espacio a URLs largas de CDN de e-commerce.
+    # El width 30 para Título cabe nombres típicos de productos de moda.
+    widths = [55, 22, 10, 10, 8, 10, 8, 15, 15, 15, 15, 15, 40, 30]
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = w
 
-    ws.auto_filter.ref = f"A1:L{row - 1}"
+    ws.auto_filter.ref = f"A1:N{row - 1}"
     ws.freeze_panes = "A2"
 
     # Save to disk
