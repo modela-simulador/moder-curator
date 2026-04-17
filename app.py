@@ -3263,6 +3263,13 @@ def order_view():
             if key in tag_overrides:
                 p["tags"] = tag_overrides[key]
 
+    # TOP 20: aplicar override. El template lee `product.is_top20` para pintar
+    # el botón activo. Si no hay override, es_top20 queda en False por default.
+    top20_set = set(session.get("product_top20_overrides") or [])
+    for b in brands:
+        for p in b["products"]:
+            p["is_top20"] = _norm_url(p["url"]) in top20_set
+
     total_products = sum(len(b["products"]) for b in brands)
     return render_template(
         "order.html",
@@ -3287,6 +3294,11 @@ def save_order():
         "tags": {
             "https://url1": ["etiqueta1", "etiqueta2", "etiqueta3", "etiqueta4"],
             ...
+        },
+        "top20": {
+            "https://url1": true,
+            "https://url2": false,
+            ...
         }
       }
 
@@ -3298,6 +3310,7 @@ def save_order():
     brand_order = data.get("brand_order") or []
     product_order = data.get("product_order") or {}
     tags = data.get("tags") or {}
+    top20 = data.get("top20") or {}
 
     if not isinstance(brand_order, list):
         return jsonify({"status": "error", "error": "brand_order debe ser lista"}), 400
@@ -3305,6 +3318,8 @@ def save_order():
         return jsonify({"status": "error", "error": "product_order debe ser dict"}), 400
     if not isinstance(tags, dict):
         return jsonify({"status": "error", "error": "tags debe ser dict"}), 400
+    if not isinstance(top20, dict):
+        return jsonify({"status": "error", "error": "top20 debe ser dict"}), 400
 
     # Normalizar URLs para que la clave sea idéntica a la usada en
     # generate_plantilla (que compara con _norm_url).
@@ -3322,10 +3337,18 @@ def save_order():
         cleaned = [str(t).strip() for t in tag_list[:4]]
         normalized_tags[_norm_url(url)] = cleaned
 
+    # TOP 20: normalizar a lista de URLs marcadas (solo las True).
+    # Guardamos una lista en lugar de dict url→bool para minimizar el tamaño
+    # del session (si un admin marca 2/200 productos, no queremos 200 entries
+    # con `false` explícito). `upload_to_admin` y `order_view` hacen O(1) con
+    # `url_norm in set(product_top20_overrides)`.
+    normalized_top20 = [_norm_url(u) for u, v in top20.items() if v and isinstance(u, str)]
+
     session = load_session()
     session["brand_order_override"] = [str(b) for b in brand_order]
     session["product_order_override"] = normalized_product_order
     session["product_tag_overrides"] = normalized_tags
+    session["product_top20_overrides"] = normalized_top20
     save_session(session)
 
     return jsonify({
@@ -3333,6 +3356,7 @@ def save_order():
         "brands": len(brand_order),
         "product_brands": len(normalized_product_order),
         "tagged_products": len(normalized_tags),
+        "top20_products": len(normalized_top20),
     })
 
 
@@ -3388,6 +3412,14 @@ def upload_to_admin():
             key = _norm_url(p["url"])
             if key in tag_overrides:
                 p["tags"] = tag_overrides[key]
+
+    # Apply TOP 20 overrides. Estos vienen del Paso 4 (botón TOP 20 en la UI).
+    # Los pisamos sobre el campo `is_top20` del product dict; después se lee
+    # abajo al construir el payload del store.
+    top20_set = set(session.get("product_top20_overrides") or [])
+    for b in brands:
+        for p in b["products"]:
+            p["is_top20"] = _norm_url(p["url"]) in top20_set
 
     # Firestore write via firestore_storage helper (already imported).
     # Uso `_get_db` porque es el handle único que la app ya usa para persistir
@@ -3561,7 +3593,9 @@ def upload_to_admin():
                 "title": p.get("title", ""),
                 "order": pos_in_brand,          # orden del producto dentro del store
                 "country": country,
-                "isTop20": False,
+                # isTop20 viene del override del Paso 4 (session["product_top20_overrides"]).
+                # Aplicado arriba sobre p["is_top20"] antes del loop.
+                "isTop20": bool(p.get("is_top20")),
                 "isTrend": bool(p.get("is_trend")),
                 "category": p.get("category", ""),
                 "tag1": tags_clean[0],

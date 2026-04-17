@@ -114,6 +114,35 @@
         .toast.success { background: #1c1c1e; color: white; }
         .toast.error { background: #c25b4a; color: white; }
 
+        /* ── Selección por teclado (click en card/row marca como activo,
+              luego ↑/↓ reordena). Anillo de 2px en negro marca el foco. */
+        .brand-card.selected { box-shadow: 0 0 0 2px #1c1c1e; }
+        .product-row.selected { box-shadow: 0 0 0 2px #1c1c1e; background: white; }
+
+        /* ── Botón TOP 20: posicionado arriba-derecha de cada product-row.
+              Click toggle + autosave. Estado visual con clase .active. */
+        .product-row { position: relative; }
+        .top20-btn {
+            position: absolute; top: 10px; right: 10px;
+            background: white; border: 1.5px solid #ccc; color: #888;
+            font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+            padding: 5px 10px; border-radius: 14px; cursor: pointer;
+            transition: all 0.15s; z-index: 2; font-family: inherit;
+        }
+        .top20-btn:hover { background: #f5f5f5; border-color: #1c1c1e; color: #1c1c1e; }
+        .top20-btn.active {
+            background: #1c1c1e; color: white; border-color: #1c1c1e;
+        }
+        .top20-btn.active::before { content: "★ "; }
+
+        /* ── Hint de teclado bajo el subtítulo ── */
+        .kbd-hint { font-size: 12px; color: #888; margin-top: 10px; line-height: 1.6; }
+        .kbd-hint kbd {
+            background: #f0f0f0; border: 1px solid #ddd; border-bottom-width: 2px;
+            border-radius: 4px; padding: 1px 6px; font-family: inherit; font-size: 11px;
+            font-weight: 600; color: #333;
+        }
+
         @media (max-width: 600px) {
             .container { padding: 24px 16px 180px; }
             .title { font-size: 26px; letter-spacing: 3px; }
@@ -135,6 +164,10 @@
             <div class="step">Paso 4 de 4</div>
             <h1 class="title">Ordenar y Descargar</h1>
             <p class="subtitle">Ordena las marcas de más a menos importante. Dentro de cada marca puedes reordenar los productos y agregar hasta 4 etiquetas para filtros.</p>
+            <div class="kbd-hint">
+                Click en una marca o producto para seleccionar, luego <kbd>↑</kbd> <kbd>↓</kbd> para reordenar. Los cambios se guardan automáticamente.
+                Toca <strong>TOP 20</strong> arriba a la derecha de cada producto para marcarlo como destacado.
+            </div>
             <div class="stats">
                 <div class="stat"><strong>{{ brand_count }}</strong>Marcas aprobadas</div>
                 <div class="stat"><strong>{{ total_products }}</strong>Productos curados</div>
@@ -164,6 +197,10 @@
                     <div class="product-list">
                         {% for product in brand.products %}
                         <div class="product-row" data-product-url="{{ product.url|e }}">
+                            <button type="button"
+                                    class="top20-btn{% if product.is_top20 %} active{% endif %}"
+                                    onclick="event.stopPropagation(); toggleTop20(this)"
+                                    title="Marcar como TOP 20 destacado">TOP 20</button>
                             <div class="product-pos">{{ loop.index }}</div>
                             <div class="product-img-wrap">
                                 <span>sin imagen</span>
@@ -201,7 +238,7 @@
     {% if brand_count > 0 %}
     <div class="footer">
         <div class="footer-inner">
-            <div class="footer-note">Los cambios se guardan al presionar cualquier botón.</div>
+            <div class="footer-note">Los cambios se guardan automáticamente al reordenar o editar.</div>
             <a href="/" class="btn btn-secondary">Cancelar</a>
             <button class="btn btn-secondary" onclick="saveAndDownload(this)">📥 Descargar planilla</button>
             <button class="btn btn-primary" onclick="saveAndUpload(this)">☁️ Subir al admin</button>
@@ -278,6 +315,7 @@
             const brand_order = [];
             const product_order = {};
             const tags = {};
+            const top20 = {};
 
             document.querySelectorAll('#brands-container .brand-card').forEach(card => {
                 const brand = card.dataset.brandName;
@@ -290,11 +328,14 @@
                     const tagList = [];
                     tagInputs.forEach(inp => tagList.push(inp.value || ''));
                     tags[url] = tagList;
+                    // Botón TOP 20: si tiene .active, este producto va marcado.
+                    const t20btn = row.querySelector('.top20-btn');
+                    top20[url] = !!(t20btn && t20btn.classList.contains('active'));
                 });
                 product_order[brand] = urls;
             });
 
-            return { brand_order, product_order, tags };
+            return { brand_order, product_order, tags, top20 };
         }
 
         // ── Toast helper ──
@@ -370,6 +411,113 @@
                 btn.disabled = false;
             }
         }
+
+        // ═══════════════════════════════════════════════════════════════════
+        //   Selección + keyboard ↑/↓ + autosave debounced + TOP 20 toggle
+        // ═══════════════════════════════════════════════════════════════════
+        // Pedido de Sofi (17 abril 2026): "apretar el click en la flecha va
+        // cambiando de posición y lo hace muy lento para manejar tantos
+        // productos como queremos". Ahora: click selecciona, ↑/↓ mueve
+        // instantáneo, y cada movimiento/edit dispara saveOrder debounced.
+        // ═══════════════════════════════════════════════════════════════════
+
+        let selected = null;
+
+        function selectItem(el) {
+            if (selected) selected.classList.remove('selected');
+            selected = el;
+            if (el) el.classList.add('selected');
+        }
+
+        // Click selecciona producto o marca (sin interferir con inputs/botones)
+        document.addEventListener('click', (e) => {
+            // No tocar selección si el click fue sobre un input/botón/link
+            if (e.target.closest('input, button, a, .brand-toggle')) return;
+            const row = e.target.closest('.product-row');
+            if (row) { selectItem(row); return; }
+            const card = e.target.closest('.brand-card');
+            if (card) { selectItem(card); return; }
+            // Click fuera de cualquier card → deseleccionar
+            if (!e.target.closest('#brands-container')) selectItem(null);
+        });
+
+        // Keyboard ↑/↓ mueve el item seleccionado
+        document.addEventListener('keydown', (e) => {
+            if (!selected) return;
+            // No interferir cuando el usuario escribe en un input/textarea
+            const tagName = (e.target.tagName || '').toLowerCase();
+            if (tagName === 'input' || tagName === 'textarea') return;
+            if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+            e.preventDefault();
+            const dir = e.key === 'ArrowUp' ? -1 : 1;
+
+            if (selected.classList.contains('product-row')) {
+                const btn = selected.querySelector(
+                    dir < 0
+                        ? '.product-actions .move-btn[title="Subir"]'
+                        : '.product-actions .move-btn[title="Bajar"]'
+                );
+                if (btn && !btn.disabled) moveProduct(btn, dir);
+            } else if (selected.classList.contains('brand-card')) {
+                const btn = selected.querySelector(
+                    dir < 0
+                        ? '.brand-header .move-btn[title="Subir"]'
+                        : '.brand-header .move-btn[title="Bajar"]'
+                );
+                if (btn && !btn.disabled) moveBrand(btn, dir);
+            }
+
+            // Mantener el seleccionado visible cuando cruza el viewport
+            selected.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            scheduleSave();
+        });
+
+        // ── Autosave debounced ──
+        // Ventana de 400 ms: si el user pulsa ↑↑↑↑ seguido, solo sale un POST
+        // al final. `saveInFlight` previene doble envío si el anterior no volvió.
+        let saveTimer = null;
+        let saveInFlight = false;
+
+        function scheduleSave() {
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(doAutoSave, 400);
+        }
+
+        async function doAutoSave() {
+            if (saveInFlight) { scheduleSave(); return; }
+            saveInFlight = true;
+            try {
+                await saveOrder();
+                showToast('Guardado ✓');
+            } catch (e) {
+                showToast('Error al guardar: ' + e.message, 'error');
+            } finally {
+                saveInFlight = false;
+            }
+        }
+
+        // Toggle TOP 20 + autosave
+        function toggleTop20(btn) {
+            btn.classList.toggle('active');
+            scheduleSave();
+        }
+        window.toggleTop20 = toggleTop20;   // accesible desde onclick inline
+
+        // Autosave cuando se edita una etiqueta
+        document.addEventListener('input', (e) => {
+            if (e.target.classList && e.target.classList.contains('tag-input')) {
+                scheduleSave();
+            }
+        });
+
+        // Autosave cuando se clickean las flechas ▲/▼ (además de keyboard)
+        // Usamos capture-phase para correr después de moveBrand/moveProduct
+        // que ya son onclick inline en el HTML.
+        document.addEventListener('click', (e) => {
+            if (e.target.classList && e.target.classList.contains('move-btn')) {
+                scheduleSave();
+            }
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             refreshMoveButtons();
